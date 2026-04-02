@@ -15,6 +15,7 @@ from langchain_core.messages import AIMessage
 from agent.graph import build_llm
 from agent.prompt import ROLEPLAY_STYLE_SAMPLE_BATCH_PROMPT, ROLEPLAY_STYLE_SAMPLE_SUMMARY_PROMPT
 from rag.prompt import (
+    CHARACTER_PROFILE_APPEARANCE_PROMPT,
     CHARACTER_PROFILE_CRITICAL_CHUNK_PROMPT,
     CHARACTER_PROFILE_CURRENT_STATE_PROMPT,
     CHARACTER_PROFILE_IDENTITY_ROLE_PROMPT,
@@ -25,7 +26,6 @@ from rag.prompt import (
     CHARACTER_RELATION_CRITICAL_CHUNK_PROMPT,
     CHARACTER_RELATION_DYNAMICS_PROMPT,
     CHARACTER_RELATION_HISTORY_SEGMENT_PROMPT,
-    CHARACTER_RELATION_HISTORY_PROMPT,
     CHARACTER_RELATION_OVERVIEW_PROMPT,
     CHARACTER_RELATION_STRUCTURE_PROMPT,
     CHARACTER_RELATION_VOLUME_GROUP_PROMPT,
@@ -64,7 +64,7 @@ MAX_ROLEPLAY_WINDOW_CHARS = 5200
 MAX_CONCURRENT_ROLEPLAY_BATCH_TASKS = 6
 MAX_CONCURRENT_ROLEPLAY_RELATION_SUMMARIES = 6
 MAX_ROLEPLAY_RELATION_TARGETS = 8
-CHARACTER_ARCHIVE_SCHEMA_VERSION = 3
+CHARACTER_ARCHIVE_SCHEMA_VERSION = 4
 JSON_RETRY_FALLBACK_MODEL = "Doubao-Seed-2.0-pro"
 PROFILE_CHANGE_KEYWORDS = ("成为", "加入", "背叛", "暴露", "恢复", "叛逃", "接任", "身份", "立场")
 PROFILE_LIFE_STATE_KEYWORDS = ("死亡", "复活", "重伤", "濒死", "失控", "复苏", "觉醒", "苏醒")
@@ -1489,6 +1489,7 @@ def _normalize_profile_chunk_json(raw: dict[str, Any], chunk: dict[str, Any]) ->
         "summary": str(raw.get("summary") or "").strip(),
         "narrative_role_signals": _dedupe_str_list(raw.get("narrative_role_signals") if isinstance(raw.get("narrative_role_signals"), list) else []),
         "personality_and_style_signals": _dedupe_str_list(raw.get("personality_and_style_signals") if isinstance(raw.get("personality_and_style_signals"), list) else []),
+        "appearance_signals": _dedupe_str_list(raw.get("appearance_signals") if isinstance(raw.get("appearance_signals"), list) else []),
         "goals_and_motivation_signals": _dedupe_str_list(raw.get("goals_and_motivation_signals") if isinstance(raw.get("goals_and_motivation_signals"), list) else []),
         "stance_and_alignment_signals": _dedupe_str_list(raw.get("stance_and_alignment_signals") if isinstance(raw.get("stance_and_alignment_signals"), list) else []),
         "abilities_and_resources_signals": _dedupe_str_list(raw.get("abilities_and_resources_signals") if isinstance(raw.get("abilities_and_resources_signals"), list) else []),
@@ -1509,6 +1510,7 @@ def _normalize_profile_volume_group_json(raw: dict[str, Any], volume_index: int,
         "relationship_changes": _dedupe_str_list(raw.get("relationship_changes") if isinstance(raw.get("relationship_changes"), list) else []),
         "narrative_role_signals": _dedupe_str_list(raw.get("narrative_role_signals") if isinstance(raw.get("narrative_role_signals"), list) else []),
         "personality_and_style_signals": _dedupe_str_list(raw.get("personality_and_style_signals") if isinstance(raw.get("personality_and_style_signals"), list) else []),
+        "appearance_signals": _dedupe_str_list(raw.get("appearance_signals") if isinstance(raw.get("appearance_signals"), list) else []),
         "goals_and_motivation_signals": _dedupe_str_list(raw.get("goals_and_motivation_signals") if isinstance(raw.get("goals_and_motivation_signals"), list) else []),
         "stance_and_alignment_signals": _dedupe_str_list(raw.get("stance_and_alignment_signals") if isinstance(raw.get("stance_and_alignment_signals"), list) else []),
         "abilities_and_resources_signals": _dedupe_str_list(raw.get("abilities_and_resources_signals") if isinstance(raw.get("abilities_and_resources_signals"), list) else []),
@@ -1975,6 +1977,7 @@ def _normalize_profile_json(
         "personality_and_style": _dedupe_str_list(
             raw.get("personality_and_style") if isinstance(raw.get("personality_and_style"), list) else []
         ),
+        "appearance": _dedupe_str_list(raw.get("appearance") if isinstance(raw.get("appearance"), list) else []),
         "goals_and_motivation": _dedupe_str_list(
             raw.get("goals_and_motivation") if isinstance(raw.get("goals_and_motivation"), list) else []
         ),
@@ -2335,18 +2338,106 @@ def _merge_relation_histories(events: list[dict[str, Any]]) -> list[dict[str, An
     return merged
 
 
+def _relation_target_name_key(target_character_name: Any) -> str:
+    text = str(target_character_name or "").strip()
+    return _normalize_text_key(text) or text
+
+
+def _pick_preferred_relation_target_name(rows: list[dict[str, Any]]) -> str:
+    for row in rows:
+        try:
+            target_character_id = int(row.get("target_character_id") or 0)
+        except (TypeError, ValueError):
+            target_character_id = 0
+        target_character_name = str(row.get("target_character_name") or "").strip()
+        if target_character_id > 0 and target_character_name:
+            return target_character_name
+    for row in rows:
+        target_character_name = str(row.get("target_character_name") or "").strip()
+        if target_character_name:
+            return target_character_name
+    return ""
+
+
+def _pick_preferred_relation_target_id(rows: list[dict[str, Any]]) -> int | None:
+    for row in rows:
+        try:
+            target_character_id = int(row.get("target_character_id") or 0)
+        except (TypeError, ValueError):
+            target_character_id = 0
+        if target_character_id > 0:
+            return target_character_id
+    return None
+
+
+def _pick_first_non_empty_relation_value(rows: list[dict[str, Any]], key: str) -> str:
+    for row in rows:
+        value = str(row.get(key) or "").strip()
+        if value:
+            return value
+    return ""
+
+
+def _dedupe_relation_rows_for_storage(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    grouped: dict[str, list[dict[str, Any]]] = defaultdict(list)
+    for row in rows:
+        key = _relation_target_name_key(row.get("target_character_name"))
+        if not key:
+            continue
+        grouped[key].append(row)
+
+    deduped_rows: list[dict[str, Any]] = []
+    for _, target_rows in sorted(grouped.items(), key=lambda item: _pick_preferred_relation_target_name(item[1])):
+        history_inputs: list[dict[str, Any]] = []
+        summary_parts: list[str] = []
+        structural_relation: list[Any] = []
+        action_relation: list[Any] = []
+        emotional_relation: list[Any] = []
+        drivers: list[Any] = []
+        for row in target_rows:
+            history_inputs.extend(_normalize_relation_history(row.get("history_json") if isinstance(row.get("history_json"), list) else []))
+            summary_parts.append(str(row.get("summary") or "").strip())
+            structural_relation.extend(row.get("structural_relation") if isinstance(row.get("structural_relation"), list) else [])
+            action_relation.extend(row.get("action_relation") if isinstance(row.get("action_relation"), list) else [])
+            emotional_relation.extend(row.get("emotional_relation") if isinstance(row.get("emotional_relation"), list) else [])
+            drivers.extend(row.get("drivers") if isinstance(row.get("drivers"), list) else [])
+        history_json = _merge_relation_histories(history_inputs)
+        deduped_rows.append(
+            {
+                "target_character_id": _pick_preferred_relation_target_id(target_rows),
+                "target_character_name": _pick_preferred_relation_target_name(target_rows),
+                "summary": "；".join(_dedupe_str_list(summary_parts)),
+                "structural_relation": _dedupe_str_list(structural_relation),
+                "action_relation": _dedupe_str_list(action_relation),
+                "emotional_relation": _dedupe_str_list(emotional_relation),
+                "directionality": _pick_first_non_empty_relation_value(target_rows, "directionality"),
+                "stability": _pick_first_non_empty_relation_value(target_rows, "stability"),
+                "current_status": _pick_first_non_empty_relation_value(target_rows, "current_status"),
+                "drivers": _dedupe_str_list(drivers),
+                "history_json": history_json,
+                "first_chapter_index": min((item["chapter_start"] for item in history_json), default=0),
+                "last_chapter_index": max((item["chapter_end"] for item in history_json), default=0),
+            }
+        )
+    deduped_rows.sort(key=lambda item: (int(item.get("first_chapter_index") or 0), str(item.get("target_character_name") or "")))
+    return deduped_rows
+
+
 def _group_relation_events(events: list[dict[str, Any]]) -> list[dict[str, Any]]:
-    grouped: dict[tuple[int | None, str], list[dict[str, Any]]] = defaultdict(list)
+    grouped: dict[str, list[dict[str, Any]]] = defaultdict(list)
     for item in events:
-        grouped[(item.get("target_character_id"), item["target_character_name"])].append(item)
+        key = _relation_target_name_key(item.get("target_character_name"))
+        if not key:
+            continue
+        grouped[key].append(item)
 
     grouped_rows: list[dict[str, Any]] = []
-    for (target_character_id, target_character_name), rows in sorted(grouped.items(), key=lambda item: (item[0][1], item[0][0] or 0)):
+    for _, rows in sorted(grouped.items(), key=lambda item: _pick_preferred_relation_target_name(item[1])):
         history = _merge_relation_histories(rows)
         grouped_rows.append(
             {
-                "target_character_id": target_character_id,
-                "target_character_name": target_character_name,
+                "target_character_id": _pick_preferred_relation_target_id(rows),
+                "target_character_name": _pick_preferred_relation_target_name(rows),
                 "history_json": history,
                 "first_chapter_index": min(item["chapter_start"] for item in history) if history else 0,
                 "last_chapter_index": max(item["chapter_end"] for item in history) if history else 0,
@@ -2382,6 +2473,10 @@ def _build_final_profile(
             profile_volume_groups_json=all_groups_json,
         ),
         "personality": CHARACTER_PROFILE_PERSONALITY_PROMPT.format(
+            character_name=character_row["name"],
+            profile_volume_groups_json=all_groups_json,
+        ),
+        "appearance": CHARACTER_PROFILE_APPEARANCE_PROMPT.format(
             character_name=character_row["name"],
             profile_volume_groups_json=all_groups_json,
         ),
@@ -2424,6 +2519,7 @@ def _build_final_profile(
     raw = {
         **module_results.get("identity_role", {}),
         **module_results.get("personality", {}),
+        **module_results.get("appearance", {}),
         **module_results.get("mechanism", {}),
         **module_results.get("volume_arc", {}),
         **module_results.get("current_state", {}),
@@ -2838,7 +2934,7 @@ def _save_relations(cursor: Any, book_id: int, character_row: dict[str, Any], ve
         """,
         (int(book_id), int(character_row["id"])),
     )
-    for row in relations:
+    for row in _dedupe_relation_rows_for_storage(relations):
         cursor.execute(
             """
             INSERT INTO character_relations

@@ -820,3 +820,21 @@ def sync_book_embedding_collections(
             raise ValueError(f"Unknown collection name: {collection_name}")
         stats[collection_name] = store.sync_book(collection_name, book_id, force=force, reset=reset)
     return stats
+
+
+def delete_book_embedding_collections(
+    book_id: int,
+    collection_names: Sequence[str] | None = None,
+) -> dict[str, dict[str, int]]:
+    store = get_qdrant_embedding_store()
+    targets = tuple(collection_names or SPEC_BY_COLLECTION.keys())
+    stats: dict[str, dict[str, int]] = {}
+    for collection_name in targets:
+        if collection_name not in SPEC_BY_COLLECTION:
+            raise ValueError(f"Unknown collection name: {collection_name}")
+        if not store.collection_exists(collection_name):
+            stats[collection_name] = {"deleted": 0, "skipped": 1}
+            continue
+        store._delete_book_points(collection_name, int(book_id))
+        stats[collection_name] = {"deleted": 1, "skipped": 0}
+    return stats

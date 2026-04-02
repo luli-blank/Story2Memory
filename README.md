@@ -33,6 +33,7 @@ docker compose up --build
 
 - 前端 UI: `http://127.0.0.1:3000`
 - Reflex backend / health endpoints: `http://127.0.0.1:8000`
+- MySQL: `127.0.0.1:13306`
 
 默认仅本机访问。公开版不会默认开放局域网或公网访问。如果你需要对外暴露，请自行增加反向代理、鉴权和网络层访问控制。
 

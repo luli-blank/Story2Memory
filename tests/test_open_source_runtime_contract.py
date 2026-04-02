@@ -62,8 +62,6 @@ def test_dockerignore_blocks_local_state_and_private_inputs():
         ".web/",
         ".states/",
         ".worktrees/",
-        "data/book/",
-        "data/picture/",
         "uploaded_files/",
         "data/logs/",
         "*.db",
@@ -110,10 +108,10 @@ def test_app_container_files_define_public_reflex_runtime():
 
 def test_docker_compose_binds_only_public_app_ports_to_loopback():
     compose = _read("docker-compose.yml")
+    assert '"127.0.0.1:13306:3306"' in compose
     assert '"127.0.0.1:${APP_FRONTEND_PORT:-3000}:3000"' in compose
     assert '"127.0.0.1:${APP_BACKEND_PORT:-8000}:8000"' in compose
     for token in [
-        "${MYSQL_HOST_PORT",
         "${REDIS_HOST_PORT",
         "${WEB_SEARCH_HOST_PORT",
         "${NEO4J_HTTP_HOST_PORT",

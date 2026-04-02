@@ -9,7 +9,12 @@ from pathlib import Path
 from typing import Any
 from xml.etree import ElementTree as ET
 
-from rag.bookSlice import CHAPTER_HEADING_PATTERN, SECTION_HEADING_PATTERN, slice_book_by_chapter
+from rag.bookSlice import (
+    CHAPTER_HEADING_PATTERN,
+    SECTION_HEADING_PATTERN,
+    apply_overlong_chapter_split,
+    slice_book_by_chapter,
+)
 
 
 @dataclass
@@ -323,7 +328,7 @@ def _docs_to_chapters(docs: list[_SpineDoc]) -> list[dict[str, Any]]:
             )
             for index, chapter in enumerate(chapters, start=1):
                 chapter["chapter_index"] = index
-    return chapters
+    return apply_overlong_chapter_split(chapters)
 
 
 def parse_epub_book(epub_path: str | Path) -> EpubParseResult:

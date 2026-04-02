@@ -13,6 +13,8 @@ from dotenv import load_dotenv
 import pymysql
 
 from agent.graph import build_llm
+from database.mysql_client import MySQLChatStore
+from database.session_keys import build_cosplay_session_info, build_legacy_qa_session_info, build_qa_session_info
 from langchain_core.messages import AIMessage
 from rag.bookSlice import slice_book_by_chapter
 from rag.epub_parser import parse_epub_book
@@ -43,6 +45,22 @@ CHAPTER_SUMMARY_FALLBACK_MODEL = "doubao-seed-2.0-pro"
 CHAPTER_SUMMARY_PRIMARY_RETRY_COUNT = 2
 CHAPTER_SUMMARY_FALLBACK_RETRY_COUNT = 2
 NON_NARRATIVE_SENTINEL = "非小说片段：无实质性叙事内容"
+BOOK_DELETE_TABLES = (
+    "character_relation_volume_groups",
+    "character_relation_chunks",
+    "character_relations",
+    "character_profile_volume_groups",
+    "character_profile_chunks",
+    "character_profiles",
+    "character_profile_jobs",
+    "world_rules",
+    "origanizations",
+    "special_existences",
+    "characters",
+    "book_volumes",
+    "book_plots",
+    "book_chapters",
+)
 
 
 def _progress_bar(current: int, total: int, width: int = 24) -> str:
@@ -931,6 +949,135 @@ def list_books() -> list[dict[str, Any]]:
                 """
             )
             return list(cursor.fetchall() or [])
+
+
+def _managed_cover_path(cover_url: str) -> Path | None:
+    raw = str(cover_url or "").strip()
+    if not raw.startswith("/covers/"):
+        return None
+    candidate = (PICTURE_DIR / raw.split("/covers/", 1)[1]).resolve()
+    picture_root = PICTURE_DIR.resolve()
+    if picture_root == candidate or picture_root in candidate.parents:
+        return candidate
+    return None
+
+
+def _managed_book_path(file_path: str) -> Path | None:
+    raw = str(file_path or "").strip()
+    if not raw:
+        return None
+    candidate = Path(raw).resolve()
+    book_root = BOOK_DIR.resolve()
+    if book_root == candidate or book_root in candidate.parents:
+        return candidate
+    return None
+
+
+def _remove_managed_path(path: Path | None) -> bool:
+    if path is None or not path.exists() or not path.is_file():
+        return False
+    path.unlink(missing_ok=True)
+    return True
+
+
+def delete_book_cascade(book_id: int) -> dict[str, Any]:
+    normalized_book_id = int(book_id or 0)
+    if normalized_book_id <= 0:
+        raise ValueError("book_id must be positive integer.")
+
+    with _connect() as conn:
+        _ensure_schema(conn)
+        with conn.cursor() as cursor:
+            cursor.execute(
+                """
+                SELECT id, title, file_path, cover_url
+                FROM books
+                WHERE id = %s
+                LIMIT 1
+                """,
+                (normalized_book_id,),
+            )
+            book_row = cursor.fetchone() or {}
+            if not book_row:
+                return {"book_id": normalized_book_id, "deleted": 0, "reason": "not_found"}
+            cursor.execute(
+                """
+                SELECT id, name
+                FROM characters
+                WHERE book_id = %s
+                ORDER BY id ASC
+                """,
+                (normalized_book_id,),
+            )
+            character_rows = list(cursor.fetchall() or [])
+            cursor.execute(
+                """
+                SELECT COUNT(*) AS title_count
+                FROM books
+                WHERE title = %s
+                """,
+                (str(book_row.get("title") or "").strip(),),
+            )
+            title_count_row = cursor.fetchone() or {}
+
+    title = str(book_row.get("title") or "").strip()
+    title_count = int(title_count_row.get("title_count") or 0)
+    store = MySQLChatStore()
+    deleted_sessions = store.delete_sessions_for_book(normalized_book_id)
+    fallback_session_ids: set[str] = set()
+    current_qa_session_id, _, _ = build_qa_session_info(
+        novel_title=title,
+        book_id=normalized_book_id,
+    )
+    if current_qa_session_id != "0":
+        fallback_session_ids.add(current_qa_session_id)
+    if title_count == 1:
+        legacy_qa_session_id, _, _ = build_legacy_qa_session_info(novel_title=title)
+        if legacy_qa_session_id != "0":
+            fallback_session_ids.add(legacy_qa_session_id)
+    for row in character_rows:
+        session_id, _, _ = build_cosplay_session_info(
+            book_id=normalized_book_id,
+            novel_title=title,
+            character_id=int(row.get("id") or 0),
+            character_name=str(row.get("name") or "").strip(),
+        )
+        if session_id != "0":
+            fallback_session_ids.add(session_id)
+
+    deleted_sessions += store.delete_sessions(sorted(fallback_session_ids))
+
+    from database.qdrant_client import delete_book_embedding_collections
+    from rag.entity_qdrant_sync import delete_entity_collections
+    from relationGraph.sync import delete_book_relation_graph
+
+    embedding_stats = delete_book_embedding_collections(normalized_book_id)
+    entity_stats = delete_entity_collections(book_id=normalized_book_id)
+    graph_stats = delete_book_relation_graph(normalized_book_id)
+
+    mysql_deleted: dict[str, int] = {}
+    with _connect() as conn:
+        _ensure_schema(conn)
+        with conn.cursor() as cursor:
+            for table_name in BOOK_DELETE_TABLES:
+                cursor.execute(f"DELETE FROM `{table_name}` WHERE book_id = %s", (normalized_book_id,))
+                mysql_deleted[table_name] = int(cursor.rowcount or 0)
+            cursor.execute("DELETE FROM books WHERE id = %s", (normalized_book_id,))
+            mysql_deleted["books"] = int(cursor.rowcount or 0)
+
+    source_deleted = _remove_managed_path(_managed_book_path(str(book_row.get("file_path") or "")))
+    cover_deleted = _remove_managed_path(_managed_cover_path(str(book_row.get("cover_url") or "")))
+    return {
+        "book_id": normalized_book_id,
+        "deleted": int(mysql_deleted.get("books", 0) or 0),
+        "deleted_sessions": deleted_sessions,
+        "mysql": mysql_deleted,
+        "qdrant": embedding_stats,
+        "entity_qdrant": entity_stats,
+        "relation_graph": graph_stats,
+        "source_deleted": source_deleted,
+        "cover_deleted": cover_deleted,
+    }
 
 
 def recover_interrupted_book_statuses() -> int:

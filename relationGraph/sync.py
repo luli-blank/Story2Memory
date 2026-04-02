@@ -310,3 +310,35 @@ def sync_character_relation_subgraph(
     except Exception as exc:
         logger.exception("Failed to sync relation graph subgraph: book_id=%s source_character_id=%s", book_id, character_row.get("id"))
         return SyncResult(status="error", error=str(exc)).to_dict()
+
+
+def delete_book_relation_graph(book_id: int) -> dict[str, Any]:
+    def _delete(tx):
+        tx.run(
+            """
+            MATCH (e:RelationEvent {book_id: $book_id})
+            DETACH DELETE e
+            """,
+            book_id=int(book_id),
+        )
+        tx.run(
+            """
+            MATCH (c:Character {book_id: $book_id})
+            DETACH DELETE c
+            """,
+            book_id=int(book_id),
+        )
+        tx.run(
+            """
+            MATCH (b:Book {book_id: $book_id})
+            DETACH DELETE b
+            """,
+            book_id=int(book_id),
+        )
+        return {"book_id": int(book_id), "deleted": 1}
+
+    try:
+        return run_write(_delete)
+    except Exception as exc:
+        logger.exception("Failed to delete relation graph: book_id=%s", book_id)
+        return {"book_id": int(book_id), "deleted": 0, "error": str(exc)}

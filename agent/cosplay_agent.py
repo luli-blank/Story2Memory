@@ -5,9 +5,7 @@ from functools import lru_cache
 import json
 import logging
 import threading
-import time
 from typing import Any, Mapping, Sequence
-from uuid import NAMESPACE_URL, uuid5
 
 from langchain_core.messages import AIMessage, BaseMessage, HumanMessage, SystemMessage
 
@@ -15,12 +13,11 @@ from agent.graph import build_llm
 from agent.hybridSearch import hybrid_retrieve_characters
 from agent.prompt import COSPLAY_SEARCH_REWRITE_PROMPT, COSPLAY_TOOL_ROUTER_PROMPT, ROLEPLAY_SYSTEM_PROMPT_TEMPLATE
 from database.mysql_client import MySQLChatStore
+from database.session_keys import build_cosplay_session_info
 from rag.character_profiles import _connect as _connect_mysql
 
-DEFAULT_USER_ID = "0"
 SUMMARY_UPDATE_STEP = 10
 RECENT_MESSAGES_LIMIT = 5
-COSPLAY_SESSION_SCHEMA_VERSION = 2
 
 logger = logging.getLogger(__name__)
 
@@ -59,7 +56,14 @@ class CosplayAgent:
             character_id=character_id,
             character_name=character_name,
         )
-        use_store = self._store.ensure_session(session_id, user_id, session_title)
+        use_store = self._store.ensure_session(
+            session_id,
+            user_id,
+            session_title,
+            book_id=int(book_id or 0) or None,
+            session_kind="roleplay",
+            character_id=int(character_id or 0) or None,
+        )
         summary = self._store.get_summary(session_id) if use_store else ""
         recent_turns = self._store.get_recent_messages(session_id, RECENT_MESSAGES_LIMIT) if use_store else None
         messages = self._build_messages(
@@ -319,14 +323,12 @@ class CosplayAgent:
         character_id: int,
         character_name: str,
     ) -> tuple[str, str, str]:
-        user_id = DEFAULT_USER_ID
-        effective_title = str(novel_title or "").strip() or "未指定作品"
-        session_key = (
-            f"story2memory:{user_id}:book:{int(book_id)}:character:{int(character_id)}:"
-            f"mode:cosplay:v{COSPLAY_SESSION_SCHEMA_VERSION}"
+        return build_cosplay_session_info(
+            book_id=book_id,
+            novel_title=novel_title,
+            character_id=character_id,
+            character_name=character_name,
         )
-        session_id = str(uuid5(NAMESPACE_URL, session_key))
-        return session_id, user_id, f"角色扮演·{effective_title}·{character_name}"
 
     @staticmethod
     def _normalize_turns(chat_history: Sequence[Mapping[str, str] | ChatTurn] | None) -> list[ChatTurn]:

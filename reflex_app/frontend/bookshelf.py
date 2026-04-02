@@ -6,18 +6,119 @@ from ..state import Book, NovelState
 from .common import glass_panel
 
 
+def delete_book_dialog() -> rx.Component:
+    return rx.cond(
+        NovelState.delete_book_dialog_open,
+        rx.box(
+            rx.vstack(
+                rx.text("确认删除", color="#f8fafc", font_size="1.05rem", font_weight="700"),
+                rx.vstack(
+                    rx.text(
+                        "是否确认删除书籍信息、分析及相关对话？",
+                        color="#cbd5e1",
+                        font_size="0.9rem",
+                        line_height="1.7",
+                    ),
+                    rx.text(
+                        NovelState.delete_book_target_title,
+                        color="#f8fafc",
+                        font_size="0.92rem",
+                        font_weight="600",
+                    ),
+                    spacing="1",
+                    align="start",
+                    width="100%",
+                ),
+                rx.hstack(
+                    rx.button(
+                        "取消",
+                        on_click=NovelState.cancel_delete_book,
+                        background="rgba(51, 65, 85, 0.88)",
+                        color="#e2e8f0",
+                        border_radius="10px",
+                        min_width="96px",
+                    ),
+                    rx.button(
+                        rx.cond(NovelState.is_deleting_book, "删除中...", "确定"),
+                        on_click=NovelState.confirm_delete_book,
+                        disabled=NovelState.is_deleting_book,
+                        background="linear-gradient(135deg, #ef4444 0%, #f97316 100%)",
+                        color="white",
+                        border_radius="10px",
+                        min_width="96px",
+                    ),
+                    justify="end",
+                    spacing="3",
+                    width="100%",
+                ),
+                padding="1.25rem",
+                border_radius="18px",
+                background="rgba(15, 23, 42, 0.96)",
+                border="1px solid rgba(248, 113, 113, 0.35)",
+                box_shadow="0 20px 60px rgba(2, 6, 23, 0.48)",
+                spacing="4",
+                width="min(92vw, 440px)",
+            ),
+            position="fixed",
+            inset="0",
+            background="rgba(2, 6, 23, 0.58)",
+            backdrop_filter="blur(3px)",
+            display="flex",
+            align_items="center",
+            justify_content="center",
+            z_index="9998",
+            padding="1.5rem",
+        ),
+        rx.box(),
+    )
+
+
 def book_card(book: Book) -> rx.Component:
     return rx.vstack(
-        rx.image(
-            src=book.cover,
+        rx.box(
+            rx.image(
+                src=book.cover,
+                width="100%",
+                height="180px",
+                object_fit="cover",
+                border_radius="10px",
+                border="1px solid rgba(148, 163, 184, 0.2)",
+                on_click=NovelState.open_book(book.id, book.title),
+                cursor="pointer",
+                _hover={"opacity": 0.9},
+            ),
+            rx.button(
+                "×",
+                on_click=NovelState.prompt_delete_book(book.id, book.title),
+                position="absolute",
+                top="10px",
+                right="10px",
+                width="30px",
+                height="30px",
+                min_width="30px",
+                padding="0",
+                border_radius="999px",
+                background="rgba(15, 23, 42, 0.82)",
+                border="1px solid rgba(248, 113, 113, 0.4)",
+                color="#fecaca",
+                font_size="1rem",
+                line_height="1",
+                opacity="0",
+                pointer_events="none",
+                transform="scale(0.92)",
+                transition="all 0.18s ease",
+                _hover={"background": "rgba(127, 29, 29, 0.92)", "color": "white"},
+                class_name="book-delete-button",
+            ),
+            position="relative",
             width="100%",
-            height="180px",
-            object_fit="cover",
-            border_radius="10px",
-            border="1px solid rgba(148, 163, 184, 0.2)",
-            on_click=NovelState.open_book(book.id, book.title),
-            cursor="pointer",
-            _hover={"opacity": 0.9},
+            _hover={
+                "& .book-delete-button": {
+                    "opacity": "1",
+                    "pointerEvents": "auto",
+                    "transform": "scale(1)",
+                }
+            },
         ),
         rx.text(
             book.title,
@@ -132,6 +233,7 @@ def bookshelf_view() -> rx.Component:
             spacing="3",
             width="100%",
         ),
+        delete_book_dialog(),
         width="100%",
         spacing="4",
         align="stretch",

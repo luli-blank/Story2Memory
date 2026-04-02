@@ -77,6 +77,34 @@ class MySQLChatStore:
                     with conn.cursor() as cursor:
                         for statement in statements:
                             cursor.execute(statement)
+                        session_columns: tuple[tuple[str, str], ...] = (
+                            (
+                                "book_id",
+                                "ALTER TABLE `sessions` ADD COLUMN `book_id` INT DEFAULT NULL COMMENT '归属书籍ID（用于精确删除）' AFTER `title`",
+                            ),
+                            (
+                                "session_kind",
+                                "ALTER TABLE `sessions` ADD COLUMN `session_kind` ENUM('qa', 'roleplay') NOT NULL DEFAULT 'qa' COMMENT '会话类型' AFTER `book_id`",
+                            ),
+                            (
+                                "character_id",
+                                "ALTER TABLE `sessions` ADD COLUMN `character_id` BIGINT DEFAULT NULL COMMENT '角色扮演会话绑定的角色ID' AFTER `session_kind`",
+                            ),
+                        )
+                        for column_name, ddl in session_columns:
+                            cursor.execute(
+                                """
+                                SELECT 1
+                                FROM information_schema.COLUMNS
+                                WHERE TABLE_SCHEMA = DATABASE()
+                                  AND TABLE_NAME = 'sessions'
+                                  AND COLUMN_NAME = %s
+                                LIMIT 1
+                                """,
+                                (column_name,),
+                            )
+                            if not cursor.fetchone():
+                                cursor.execute(ddl)
             except Exception:
                 logger.exception("Failed to ensure MySQL schema.")
                 return False
@@ -84,19 +112,42 @@ class MySQLChatStore:
             self._schema_ready = True
             return True
 
-    def ensure_session(self, session_id: str, user_id: str, title: str | None = None) -> bool:
+    def ensure_session(
+        self,
+        session_id: str,
+        user_id: str,
+        title: str | None = None,
+        *,
+        book_id: int | None = None,
+        session_kind: str = "qa",
+        character_id: int | None = None,
+    ) -> bool:
         if not self._ensure_schema():
             return False
+        normalized_book_id = int(book_id or 0)
+        normalized_character_id = int(character_id or 0)
+        safe_session_kind = "roleplay" if str(session_kind or "").strip().lower() == "roleplay" else "qa"
         try:
             with self._connect() as conn:
                 with conn.cursor() as cursor:
                     cursor.execute(
                         """
-                        INSERT INTO sessions (id, user_id, title)
-                        VALUES (%s, %s, %s)
-                        ON DUPLICATE KEY UPDATE title = COALESCE(VALUES(title), title)
+                        INSERT INTO sessions (id, user_id, title, book_id, session_kind, character_id)
+                        VALUES (%s, %s, %s, %s, %s, %s)
+                        ON DUPLICATE KEY UPDATE
+                            title = COALESCE(VALUES(title), title),
+                            book_id = COALESCE(VALUES(book_id), book_id),
+                            session_kind = VALUES(session_kind),
+                            character_id = COALESCE(VALUES(character_id), character_id)
                         """,
-                        (session_id, user_id, title),
+                        (
+                            session_id,
+                            user_id,
+                            title,
+                            normalized_book_id or None,
+                            safe_session_kind,
+                            normalized_character_id or None,
+                        ),
                     )
             return True
         except Exception:
@@ -239,3 +290,40 @@ class MySQLChatStore:
         except Exception:
             logger.exception("Failed to update summary: session_id=%s", session_id)
             return False
+
+    def delete_sessions(self, session_ids: list[str] | tuple[str, ...]) -> int:
+        if not self._ensure_schema():
+            return 0
+        normalized_ids = [str(item or "").strip() for item in session_ids if str(item or "").strip()]
+        if not normalized_ids:
+            return 0
+        placeholders = ", ".join(["%s"] * len(normalized_ids))
+        try:
+            with self._connect() as conn:
+                with conn.cursor() as cursor:
+                    cursor.execute(
+                        f"DELETE FROM sessions WHERE id IN ({placeholders})",
+                        tuple(normalized_ids),
+                    )
+                    return int(getattr(cursor, "rowcount", 0) or 0)
+        except Exception:
+            logger.exception("Failed to delete sessions: count=%d", len(normalized_ids))
+            return 0
+
+    def delete_sessions_for_book(self, book_id: int) -> int:
+        if not self._ensure_schema():
+            return 0
+        normalized_book_id = int(book_id or 0)
+        if normalized_book_id <= 0:
+            return 0
+        try:
+            with self._connect() as conn:
+                with conn.cursor() as cursor:
+                    cursor.execute(
+                        "DELETE FROM sessions WHERE book_id = %s",
+                        (normalized_book_id,),
+                    )
+                    return int(getattr(cursor, "rowcount", 0) or 0)
+        except Exception:
+            logger.exception("Failed to delete sessions for book: book_id=%s", normalized_book_id)
+            return 0

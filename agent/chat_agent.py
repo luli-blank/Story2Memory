@@ -8,7 +8,6 @@ import re
 import threading
 import time
 from typing import Mapping, Sequence
-from uuid import NAMESPACE_URL, uuid5
 
 from langchain_core.messages import AIMessage, BaseMessage, HumanMessage, SystemMessage
 from langchain_core.tools import BaseTool
@@ -22,13 +21,11 @@ from agent.graph import (
 )
 from agent.searchAgent import contentSearch, warm_search_runtime
 from database.mysql_client import MySQLChatStore
+from database.session_keys import build_qa_session_info
 
 DEFAULT_HISTORY_WINDOW = 12
 RECENT_MESSAGES_LIMIT = 5
 SUMMARY_UPDATE_STEP = 10
-DEFAULT_USER_ID = "0"
-GLOBAL_SESSION_ID = "0"
-GLOBAL_SESSION_TITLE = "全局"
 RETRY_SEARCH_MARKERS = (
     "重新搜索",
     "重新检索",
@@ -103,6 +100,7 @@ class ChatAgent:
         self,
         user_input: str,
         *,
+        book_id: int = 0,
         novel_title: str = "",
         chat_history: Sequence[Mapping[str, str] | ChatTurn] | None = None,
     ) -> str:
@@ -114,8 +112,17 @@ class ChatAgent:
 
         start_request_metrics(request_id)
         try:
-            session_id, user_id, session_title = self._resolve_session_info(novel_title)
-            use_store = self._store.ensure_session(session_id, user_id, session_title)
+            session_id, user_id, session_title = self._resolve_session_info(
+                novel_title=novel_title,
+                book_id=book_id,
+            )
+            use_store = self._store.ensure_session(
+                session_id,
+                user_id,
+                session_title,
+                book_id=int(book_id or 0) or None,
+                session_kind="qa",
+            )
             logger.info(
                 "[ChatAgent][%s] start. session_id=%s use_store=%s novel_title=%s chars=%d",
                 request_id,
@@ -620,15 +627,8 @@ class ChatAgent:
             return ""
 
     @staticmethod
-    def _resolve_session_info(novel_title: str) -> tuple[str, str, str]:
-        title = novel_title.strip()
-        user_id = DEFAULT_USER_ID
-        if not title:
-            return GLOBAL_SESSION_ID, user_id, GLOBAL_SESSION_TITLE
-
-        session_key = f"story2memory:{user_id}:{title}"
-        session_id = str(uuid5(NAMESPACE_URL, session_key))
-        return session_id, user_id, title
+    def _resolve_session_info(*, novel_title: str, book_id: int = 0) -> tuple[str, str, str]:
+        return build_qa_session_info(novel_title=novel_title, book_id=book_id)
 
     @staticmethod
     def _estimate_token_count(text: str) -> int:

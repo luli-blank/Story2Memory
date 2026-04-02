@@ -2,11 +2,15 @@ CREATE TABLE IF NOT EXISTS `sessions` (
     `id` VARCHAR(36) PRIMARY KEY COMMENT '会话唯一ID',
     `user_id` VARCHAR(36) NOT NULL COMMENT '用户ID',
     `title` VARCHAR(255) COMMENT '会话标题',
+    `book_id` INT DEFAULT NULL COMMENT '归属书籍ID（用于精确删除）',
+    `session_kind` ENUM('qa', 'roleplay') NOT NULL DEFAULT 'qa' COMMENT '会话类型',
+    `character_id` BIGINT DEFAULT NULL COMMENT '角色扮演会话绑定的角色ID',
     `current_summary` TEXT COMMENT '当前对话的压缩摘要',
     `last_summarized_msg_id` BIGINT DEFAULT 0 COMMENT '最后一次摘要处理到的消息ID',
     `created_at` TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
     `updated_at` TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
-    INDEX `idx_user` (`user_id`)
+    INDEX `idx_user` (`user_id`),
+    INDEX `idx_session_book` (`book_id`, `session_kind`)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
 
 CREATE TABLE IF NOT EXISTS `messages` (

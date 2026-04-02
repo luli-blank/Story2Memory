@@ -573,6 +573,24 @@ def sync_entity_collections(*, row_limit: int | None = None, book_id: int | None
     }
 
 
+def delete_entity_collections(*, book_id: int) -> dict[str, dict[str, int]]:
+    if models is None:
+        raise RuntimeError("qdrant-client models are unavailable.")
+    client = get_qdrant_embedding_store()._client
+    stats: dict[str, dict[str, int]] = {}
+    for collection_name in ENTITY_COLLECTIONS:
+        if not client.collection_exists(collection_name=collection_name):
+            stats[collection_name] = {"deleted": 0, "skipped": 1}
+            continue
+        client.delete(
+            collection_name=collection_name,
+            points_selector=_build_book_filter(int(book_id)),
+            wait=True,
+        )
+        stats[collection_name] = {"deleted": 1, "skipped": 0}
+    return stats
+
+
 def main() -> None:
     print(json.dumps(sync_entity_collections(), ensure_ascii=False))
 

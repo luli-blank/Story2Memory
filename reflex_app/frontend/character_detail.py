@@ -177,6 +177,7 @@ def _profile_tab_content(profile: CharacterProfileView) -> rx.Component:
         rx.box(
             rx.vstack(
                 _profile_summary_block(profile),
+                _profile_text_block("外貌特征", profile.appearance, "No appearance data recorded."),
                 _profile_text_block("叙事定位", profile.narrative_role, "No narrative role recorded."),
                 _profile_text_block("性格与风格", profile.personality_and_style, "No personality data recorded."),
                 _profile_text_block("目标与动机", profile.goals_and_motivation, "No goals or motivation recorded."),

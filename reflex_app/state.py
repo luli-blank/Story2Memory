@@ -189,6 +189,7 @@ class CharacterStyleSampleView(pydantic.BaseModel):
 class CharacterProfileView(pydantic.BaseModel):
     identity_summary: str = ""
     aliases: list[str] = []
+    appearance: list[str] = []
     narrative_role: list[str] = []
     personality_and_style: list[str] = []
     style_summary: str = ""
@@ -203,6 +204,18 @@ class CharacterProfileView(pydantic.BaseModel):
     current_state: list[str] = []
     turning_points: list[str] = []
     key_events: list[str] = []
+
+
+def _dedupe_non_empty_strs(values: list[Any] | None) -> list[str]:
+    deduped: list[str] = []
+    seen: set[str] = set()
+    for item in values or []:
+        text = str(item or "").strip()
+        if not text or text in seen:
+            continue
+        deduped.append(text)
+        seen.add(text)
+    return deduped
 
 
 class RelationGraphNodeView(pydantic.BaseModel):
@@ -331,9 +344,13 @@ class NovelState(rx.State):
     upload_feedback_is_error: bool = False
     is_uploading: bool = False
     is_analyzing: bool = False
+    is_deleting_book: bool = False
     analysis_feedback: str = ""
     analysis_feedback_is_error: bool = False
     analysis_feedback_visible: bool = False
+    delete_book_dialog_open: bool = False
+    delete_book_target_id: int = 0
+    delete_book_target_title: str = ""
     character_archive_items: list[CharacterArchiveCard] = []
     character_archive_page: int = 1
     current_character_card: CharacterArchiveCard = CharacterArchiveCard()
@@ -459,6 +476,63 @@ class NovelState(rx.State):
         self.character_feedback_visible = False
         self._reset_relation_graph_state()
         self.page_mode = "detail"
+
+    def prompt_delete_book(self, book_id: int, title: str):
+        self.delete_book_target_id = int(book_id or 0)
+        self.delete_book_target_title = str(title or "").strip()
+        self.delete_book_dialog_open = self.delete_book_target_id > 0
+
+    def cancel_delete_book(self):
+        self.delete_book_dialog_open = False
+        self.delete_book_target_id = 0
+        self.delete_book_target_title = ""
+        self.is_deleting_book = False
+
+    async def confirm_delete_book(self):
+        book_id = int(self.delete_book_target_id or 0)
+        title = str(self.delete_book_target_title or "").strip()
+        if book_id <= 0 or self.is_deleting_book:
+            return
+
+        self.is_deleting_book = True
+        self.upload_feedback = ""
+        self.upload_feedback_is_error = False
+        yield
+
+        try:
+            from rag.uploadBook import delete_book_cascade
+
+            result = await asyncio.to_thread(delete_book_cascade, book_id)
+            if int(result.get("deleted") or 0) <= 0:
+                raise RuntimeError("未找到要删除的书籍记录。")
+            if int(self.current_book_id or 0) == book_id:
+                self.current_book_id = 0
+                self.current_novel = ""
+                self.current_character_id = 0
+                self.current_character_name = ""
+                self.chat_mode = "qa"
+                self.chat_messages = self._default_chat_messages()
+                self.chat_input = ""
+                self.character_archive_items = []
+                self.character_archive_page = 1
+                self.current_character_card = CharacterArchiveCard()
+                self.current_character_profile = CharacterProfileView()
+                self.current_character_relations = []
+                self._reset_relation_graph_state()
+            self.page_mode = "bookshelf"
+            self.load_books()
+            self.upload_feedback = f"已删除《{title or f'书籍#{book_id}'}》及其相关分析与对话。"
+            self.upload_feedback_is_error = False
+        except Exception as exc:
+            logger.exception("Failed to delete book: book_id=%s", book_id)
+            self.upload_feedback = f"删除失败：{exc}"
+            self.upload_feedback_is_error = True
+        finally:
+            self.delete_book_dialog_open = False
+            self.delete_book_target_id = 0
+            self.delete_book_target_title = ""
+            self.is_deleting_book = False
+            yield
 
     def back_to_bookshelf(self):
         self.page_mode = "bookshelf"
@@ -1185,21 +1259,22 @@ class NovelState(rx.State):
             )
         return CharacterProfileView(
             identity_summary=str(identity.get("summary") or "").strip(),
-            aliases=[str(item or "").strip() for item in identity.get("aliases") or [] if str(item or "").strip()],
-            narrative_role=[str(item or "").strip() for item in source.get("narrative_role") or [] if str(item or "").strip()],
-            personality_and_style=[str(item or "").strip() for item in source.get("personality_and_style") or [] if str(item or "").strip()],
+            aliases=_dedupe_non_empty_strs(identity.get("aliases") if isinstance(identity.get("aliases"), list) else []),
+            appearance=_dedupe_non_empty_strs(source.get("appearance") if isinstance(source.get("appearance"), list) else []),
+            narrative_role=_dedupe_non_empty_strs(source.get("narrative_role") if isinstance(source.get("narrative_role"), list) else []),
+            personality_and_style=_dedupe_non_empty_strs(source.get("personality_and_style") if isinstance(source.get("personality_and_style"), list) else []),
             style_summary=str(source.get("style_summary") or "").strip(),
-            speech_style=[str(item or "").strip() for item in source.get("speech_style") or [] if str(item or "").strip()],
+            speech_style=_dedupe_non_empty_strs(source.get("speech_style") if isinstance(source.get("speech_style"), list) else []),
             style_samples=[item for item in style_samples if item.scene and item.quote],
-            goals_and_motivation=[str(item or "").strip() for item in source.get("goals_and_motivation") or [] if str(item or "").strip()],
-            stance_and_alignment=[str(item or "").strip() for item in source.get("stance_and_alignment") or [] if str(item or "").strip()],
-            abilities_and_resources=[str(item or "").strip() for item in source.get("abilities_and_resources") or [] if str(item or "").strip()],
-            stable_profile=[str(item or "").strip() for item in source.get("stable_profile") or [] if str(item or "").strip()],
+            goals_and_motivation=_dedupe_non_empty_strs(source.get("goals_and_motivation") if isinstance(source.get("goals_and_motivation"), list) else []),
+            stance_and_alignment=_dedupe_non_empty_strs(source.get("stance_and_alignment") if isinstance(source.get("stance_and_alignment"), list) else []),
+            abilities_and_resources=_dedupe_non_empty_strs(source.get("abilities_and_resources") if isinstance(source.get("abilities_and_resources"), list) else []),
+            stable_profile=_dedupe_non_empty_strs(source.get("stable_profile") if isinstance(source.get("stable_profile"), list) else []),
             emotional_relations=[item for item in emotional_relations if item.target_character_name],
             volume_arc=volume_arc,
-            current_state=[str(item or "").strip() for item in source.get("current_state") or [] if str(item or "").strip()],
-            turning_points=[str(item or "").strip() for item in source.get("turning_points") or [] if str(item or "").strip()],
-            key_events=[str(item or "").strip() for item in source.get("key_events") or [] if str(item or "").strip()],
+            current_state=_dedupe_non_empty_strs(source.get("current_state") if isinstance(source.get("current_state"), list) else []),
+            turning_points=_dedupe_non_empty_strs(source.get("turning_points") if isinstance(source.get("turning_points"), list) else []),
+            key_events=_dedupe_non_empty_strs(source.get("key_events") if isinstance(source.get("key_events"), list) else []),
         )
 
     @staticmethod
@@ -1762,6 +1837,7 @@ class NovelState(rx.State):
                     asyncio.to_thread(
                         agent.reply,
                         text,
+                        book_id=int(self.current_book_id or 0),
                         novel_title=active_title,
                         chat_history=history,
                     ),
