@@ -1,0 +1,6 @@
+CREATE CONSTRAINT character_id IF NOT EXISTS FOR (c:Character) REQUIRE c.id IS UNIQUE;
+CREATE CONSTRAINT faction_id IF NOT EXISTS FOR (f:Faction) REQUIRE f.id IS UNIQUE;
+CREATE CONSTRAINT event_id IF NOT EXISTS FOR (e:Event) REQUIRE e.id IS UNIQUE;
+CREATE CONSTRAINT book_book_id IF NOT EXISTS FOR (b:Book) REQUIRE b.book_id IS UNIQUE;
+CREATE CONSTRAINT character_graph_key IF NOT EXISTS FOR (c:Character) REQUIRE c.graph_key IS UNIQUE;
+CREATE CONSTRAINT relation_event_key IF NOT EXISTS FOR (e:RelationEvent) REQUIRE e.event_key IS UNIQUE;

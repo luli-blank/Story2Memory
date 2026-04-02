@@ -1,0 +1,15 @@
+assets/external/
+.DS_Store
+__pycache__/
+.web
+*.py[cod]
+*.db
+.states
+data/logs/
+data/book/
+data/picture/
+uploaded_files/
+.worktrees/
+.env
+.env.*
+!.env.example

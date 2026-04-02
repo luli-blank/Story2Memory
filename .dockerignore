@@ -1,0 +1,17 @@
+.git
+.github/
+__pycache__/
+.pytest_cache/
+.web/
+.states/
+.worktrees/
+data/logs/
+data/book/
+data/picture/
+uploaded_files/
+*.pyc
+*.pyo
+*.db
+.env
+.env.*
+.DS_Store

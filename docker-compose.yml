@@ -1,0 +1,132 @@
+services:
+  mysql:
+    image: mysql:8.0
+    restart: unless-stopped
+    command: ["mysqld", "--port=3306"]
+    environment:
+      MYSQL_DATABASE: ${MYSQL_DATABASE:-novel_cognition}
+      MYSQL_USER: ${MYSQL_USER:-story2memory}
+      MYSQL_PASSWORD: ${MYSQL_PASSWORD:-change-me-story2memory-db-password}
+      MYSQL_ROOT_PASSWORD: ${MYSQL_ROOT_PASSWORD:-change-me-mysql-root-password}
+      MYSQL_ROOT_HOST: "%"
+    volumes:
+      - mysql_data:/var/lib/mysql
+      - ./database/mysql/create_tables.sql:/docker-entrypoint-initdb.d/01-create_tables.sql:ro
+    healthcheck:
+      test: ["CMD-SHELL", "mysqladmin ping -h 127.0.0.1 -P 3306 -uroot -p$$MYSQL_ROOT_PASSWORD --silent"]
+      interval: 10s
+      timeout: 5s
+      retries: 20
+      start_period: 30s
+
+  redis:
+    image: redis:7
+    restart: unless-stopped
+    command: ["redis-server", "--port", "6379"]
+
+  web-search:
+    image: ghcr.io/aas-ee/open-web-search:latest
+    restart: unless-stopped
+    environment:
+      PORT: 3002
+
+  neo4j:
+    image: neo4j:5
+    restart: unless-stopped
+    environment:
+      NEO4J_AUTH: ${NEO4J_USER:-neo4j}/${NEO4J_PASSWORD:-change-me-neo4j-password}
+    volumes:
+      - neo4j_data:/data
+    healthcheck:
+      test:
+        [
+          "CMD-SHELL",
+          "cypher-shell -a bolt://127.0.0.1:7687 -u ${NEO4J_USER:-neo4j} -p ${NEO4J_PASSWORD:-change-me-neo4j-password} 'RETURN 1;' >/dev/null 2>&1",
+        ]
+      interval: 15s
+      timeout: 10s
+      retries: 20
+      start_period: 30s
+
+  neo4j-init:
+    image: neo4j:5
+    restart: "no"
+    env_file:
+      - ${STORY2MEMORY_ENV_FILE:-.env}
+    depends_on:
+      neo4j:
+        condition: service_healthy
+    volumes:
+      - .:/workspace
+    working_dir: /workspace
+    entrypoint:
+      - sh
+      - -lc
+      - >
+        (command -v cypher-shell >/dev/null 2>&1
+        && cypher-shell -a "$$NEO4J_URI" -u "$$NEO4J_USER" -p "$$NEO4J_PASSWORD")
+        || ([ -x /var/lib/neo4j/bin/cypher-shell ]
+        && /var/lib/neo4j/bin/cypher-shell -a "$$NEO4J_URI" -u "$$NEO4J_USER" -p "$$NEO4J_PASSWORD")
+        || ([ -x /usr/bin/cypher-shell ]
+        && /usr/bin/cypher-shell -a "$$NEO4J_URI" -u "$$NEO4J_USER" -p "$$NEO4J_PASSWORD")
+        < /workspace/scripts/init_neo4j.cypher
+
+  qdrant:
+    image: qdrant/qdrant:latest
+    restart: unless-stopped
+    volumes:
+      - qdrant_data:/qdrant/storage
+
+  rerank-local:
+    build:
+      context: ./docker/rerank-local
+    restart: unless-stopped
+    environment:
+      RERANK_MODEL_ID: BAAI/bge-reranker-v2-m3
+      RERANK_DEVICE: cpu
+      RERANK_MAX_LENGTH: 512
+      HF_HOME: /models/hf
+      TRANSFORMERS_CACHE: /models/hf
+      HF_HUB_DISABLE_XET: "1"
+      HF_HUB_ETAG_TIMEOUT: "120"
+      HF_HUB_DOWNLOAD_TIMEOUT: "240"
+    volumes:
+      - rerank_model_cache:/models/hf
+    healthcheck:
+      test: ["CMD", "python", "-c", "import socket; s = socket.create_connection(('127.0.0.1', 8000), 5); s.close()"]
+      interval: 30s
+      timeout: 10s
+      retries: 10
+      start_period: 30s
+
+  app:
+    build:
+      context: .
+    restart: unless-stopped
+    env_file:
+      - ${STORY2MEMORY_ENV_FILE:-.env}
+    depends_on:
+      mysql:
+        condition: service_healthy
+      neo4j:
+        condition: service_healthy
+      neo4j-init:
+        condition: service_completed_successfully
+      qdrant:
+        condition: service_started
+      redis:
+        condition: service_started
+      rerank-local:
+        condition: service_healthy
+      web-search:
+        condition: service_started
+    ports:
+      - "127.0.0.1:${APP_FRONTEND_PORT:-3000}:3000"
+      - "127.0.0.1:${APP_BACKEND_PORT:-8000}:8000"
+
+volumes:
+  mysql_data:
+  redis_data:
+  neo4j_data:
+  qdrant_data:
+  rerank_model_cache:
