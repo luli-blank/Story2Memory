@@ -669,10 +669,6 @@ def _plan_multi_search_route_via_api(user_query: str) -> dict[str, Any] | None:
     llm = _build_route_llm()
     if llm is None:
         return None
-    prompt = (
-        f"{MULTI_QUERY_PLANNER_PROMPT}\n\n"
-        f"user_query: {user_query}\n"
-    )
     try:
         response = llm.invoke(
             [

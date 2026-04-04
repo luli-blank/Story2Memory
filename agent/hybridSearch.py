@@ -43,6 +43,7 @@ ORIGANIZATION_COLLECTION = "origanizations"
 SPECIAL_EXISTENCE_COLLECTION = "special_existences"
 WORLD_RULE_COLLECTION = "world_rules"
 HYBRID_SPARSE_RETRIEVAL_ENABLED_ENV_VAR = "HYBRID_SPARSE_RETRIEVAL_ENABLED"
+HYBRID_DENSE_RETRIEVAL_ENABLED_ENV_VAR = "HYBRID_DENSE_RETRIEVAL_ENABLED"
 
 RRF_K = 60.0
 HYBRID_FILTER_COMPLEX_MARKERS = (
@@ -637,14 +638,15 @@ def _should_run_llm_filter(
 
 
 def warm_hybrid_runtime() -> None:
-    try:
-        get_qdrant_embedding_store()
-    except Exception as exc:
-        logger.warning("[Prewarm] qdrant store warm failed: %s", exc)
-    try:
-        _get_embedding_query_client()
-    except Exception as exc:
-        logger.warning("[Prewarm] embedding query client warm failed: %s", exc)
+    if _hybrid_dense_retrieval_enabled():
+        try:
+            get_qdrant_embedding_store()
+        except Exception as exc:
+            logger.warning("[Prewarm] qdrant store warm failed: %s", exc)
+        try:
+            _get_embedding_query_client()
+        except Exception as exc:
+            logger.warning("[Prewarm] embedding query client warm failed: %s", exc)
     if _hybrid_sparse_retrieval_enabled():
         try:
             _get_sparse_encoder()
@@ -1064,6 +1066,17 @@ def _hybrid_sparse_retrieval_enabled() -> bool:
     return raw in {"1", "true", "yes", "on"}
 
 
+def _hybrid_dense_retrieval_enabled() -> bool:
+    raw = str(os.getenv(HYBRID_DENSE_RETRIEVAL_ENABLED_ENV_VAR, "0") or "0").strip().lower()
+    return raw in {"1", "true", "yes", "on"}
+
+
+def _rerank_disabled() -> bool:
+    _load_runtime_env()
+    raw = str(os.getenv("RERANK_DISABLED", "1") or "1").strip().lower()
+    return raw in {"1", "true", "yes", "on"}
+
+
 def _extract_sparse_vector(embedding: Any) -> tuple[list[int], list[float]]:
     indices = getattr(embedding, "indices", None)
     values = getattr(embedding, "values", None)
@@ -1275,6 +1288,8 @@ def _dense_and_sparse_retrieve(
     query_client: EmbeddingQueryClient | None = None,
     source_ids: Sequence[int] | None = None,
 ) -> tuple[list[dict[str, Any]], list[dict[str, Any]], str]:
+    if not _hybrid_dense_retrieval_enabled():
+        return [], [], "dense_retrieval_disabled"
     store = get_qdrant_embedding_store()
     if not store.collection_exists(spec.collection_name):
         return [], [], "collection_missing"
@@ -1342,14 +1357,58 @@ def _rerank_candidates(
     text_field: str,
     top_n: int,
 ) -> tuple[list[dict[str, Any]], str]:
-    del query, text_field
     if not candidates:
         return [], "no_candidates"
     fallback = list(candidates)[:top_n]
     for rank, item in enumerate(fallback, start=1):
         item["rerank_score"] = None
         item["rerank_rank"] = rank
-    return fallback, "rerank_disabled"
+    if _rerank_disabled():
+        return fallback, "rerank_disabled"
+
+    documents = [
+        _normalize_text(dict(item.get("payload", {}) or {}).get(text_field, ""))
+        for item in candidates
+    ]
+    try:
+        ranked_items = _get_rerank_client().rerank(query, documents, top_n)
+    except Exception as exc:
+        logger.warning("[HybridSearch] rerank failed, fallback to fused ranking: %s", exc)
+        return fallback, "rerank_error_fallback"
+
+    reranked: list[dict[str, Any]] = []
+    seen_indices: set[int] = set()
+    for rerank_rank, item in enumerate(ranked_items, start=1):
+        try:
+            index = int(item.get("index"))
+        except (TypeError, ValueError, AttributeError):
+            continue
+        if index < 0 or index >= len(candidates) or index in seen_indices:
+            continue
+        candidate = dict(candidates[index])
+        candidate["rerank_score"] = float(item.get("score", 0.0) or 0.0)
+        candidate["rerank_rank"] = rerank_rank
+        reranked.append(candidate)
+        seen_indices.add(index)
+
+    if not reranked:
+        return fallback, "rerank_zero_hit_fallback"
+
+    for item in fallback:
+        if len(reranked) >= max(1, int(top_n)):
+            break
+        try:
+            candidate_id = str(item.get("id"))
+        except Exception:
+            candidate_id = ""
+        if any(str(existing.get("id")) == candidate_id for existing in reranked):
+            continue
+        appended = dict(item)
+        appended["rerank_score"] = None
+        appended["rerank_rank"] = len(reranked) + 1
+        reranked.append(appended)
+
+    return reranked[: max(1, int(top_n))], "reranked"
 
 
 def _filter_results_with_llm(

@@ -27,13 +27,6 @@ CONTENT_SEARCH_REWRITE_PROMPT = (
     "请基于检索结果进行回答重写：先给结论，再给关键依据。"
     "禁止编造检索结果中不存在的事实；若检索失败或证据不足，要明确说明。"
 )
-ROLEPLAY_CONTENT_SEARCH_REWRITE_PROMPT = (
-    "你是角色扮演问答整理助手。"
-    "你会收到用户问题、角色扮演摘要、会话上下文和 contentSearch 的原始检索结果。"
-    "请基于检索结果，以角色第一人称重写回答。"
-    "保持角色口吻，不要跳出角色，不要说自己调用了检索工具。"
-    "禁止编造检索结果中不存在的事实；若证据不足，要以角色视角保守回应。"
-)
 
 COSPLAY_TOOL_ROUTER_PROMPT = """
 你是 Story2Memory 的角色扮演工具路由器，只负责判断当前问题是否需要工具。
@@ -217,84 +210,6 @@ ROUTE_SKILL_PATH_MAPPING_PROMPT = """
   "confidence": 0.0
 }}
 """
-
-
-# 用于 `agent/searchAgent.py` 主控 Agent 的系统提示词，负责定义检索坐标体系、工具使用顺序与反幻觉约束。
-SYSTEM_PROMPT_TEMPLATE = """
-# Role
-你是 Story2Memory 的深度检索 Agent。当前锁定书籍 ID：{book_id}。
-你的目标不是展示检索过程，而是用最少的工具调用拿到足够的章节级证据，然后回答用户问题。
-
-# Core Contract
-1. 初始路径已经由系统判断并强制执行过一次；从第二步开始，你只能根据当前检索结果继续决策。
-2. 你必须优先利用已经拿到的高置信坐标，禁止为了“走完整流程”而回头补扫上层。
-3. 只有章节级证据可以支持最终回答。卷级和情节级结果只负责定位，不负责定案。
-4. 调用工具时不要写长段流程说明，不要复述计划，不要自我鼓励；直接调用工具，必要时只保留一句极短说明。
-
-# Coordinate System
-你必须严格区分三级坐标，并且只允许沿着真实坐标单向下潜：
-1. `Volume`：卷级。
-2. `Plot`：全局情节序号。
-3. `Chapter`：全局物理章节序号。
-绝对禁止把不同层级的编号视为同一种编号。任何下层坐标都必须来自上层工具返回值。
-
-# Tool Roles
-1. `hybrid_retrieve_chapter_summaries`：最快的章节级定位器。
-2. `hybrid_retrieve_plots`：最快的 plot 与章节窗口定位器。
-3. `hybrid_retrieve_volumes`：最快的卷级定位器。
-4. `retrieve_volumes`：仅在混合检索弱命中、无坐标或需要全局兜底时使用。
-5. `retrieve_plots`：用于确认 plot 的章节窗口；若混合检索已返回可靠章节窗口，可直接跳过。
-6. `retrieve_chapter_directory`：仅用于中文章节号与物理章节号对齐。
-7. `retrieve_chapter_summaries`：章节级验证层。返回结构化证据：`hit_chapters`、`hit_count`、`best_evidence`、`needs_fulltext`、`coverage`。
-8. `retrieve_chapters`：原文层。用于补足最后缺失的细节或原话证据。
-
-# Query Writing
-- 调 `hybrid_*` 时：使用关键词堆叠短语，不写完整问句。
-- 调 `retrieve_*` 时：使用完整、具体的待确认问题。
-- 优先使用最小必要窗口，不要给宽范围。
-
-# Decision Order
-每次决策都按以下顺序判断，前一条满足后就执行，不要继续往下看：
-
-1. **先读最近一次工具结果**
-   - 先看它是否已经提供结构化章节证据。
-   - 不要忽略 `hit_chapters`、`hit_count`、`best_evidence`、`needs_fulltext`、`coverage`。
-
-2. **若已具备足够章节证据，立即收束**
-   - 如果当前问题涉及：
-     - “过程 / 如何成为 / 怎么变成 / 演变” -> 对应 `coverage.process`
-     - “称号来源 / 真名 / 改名 / 名字来源” -> 对应 `coverage.title_source`
-     - “是什么 / 身份 / 本质 / 定义” -> 对应 `coverage.identity_definition`
-   - 只有用户真正问到的槽位才需要覆盖。
-   - 若这些被问到的槽位都已覆盖，立即回答，禁止继续调用工具。
-
-3. **若只缺一个槽位，做最小补检**
-   - 若结构化章节证据只缺一个槽位，且已有 `hit_chapters`，只允许调用一次 `retrieve_chapters`。
-   - 读取范围必须收缩到当前命中的最小章节窗口，且跨度不得超过 10 章。
-   - 禁止此时重新扩大到 volume 或全局 plot 扫描。
-
-4. **若混合检索已高置信返回章节坐标，直接下潜**
-   - 若 `hybrid_retrieve_plots` 已返回可靠的 `start_chapter_index/end_chapter_index`，下一步优先 `retrieve_chapter_summaries`，不要先调 `retrieve_volumes`。
-   - 若 `hybrid_retrieve_chapter_summaries` 已返回高置信命中章节，优先围绕该章节或最小相邻窗口继续验证。
-   - 一旦已经进入高置信 chapter/plot 窗口，禁止回头先扫 volume。
-
-5. **只有在混合检索不够用时，才走传统兜底路线**
-   - 适用条件：混合检索无命中、坐标缺失、置信度不足、章节验证后仍没有稳定证据。
-   - 兜底路线：`retrieve_volumes -> retrieve_plots -> retrieve_chapter_summaries`
-
-6. **全局问题也必须克制扩张**
-   - 对全局总结类问题，可以存在多个候选窗口。
-   - 但一旦某个候选窗口已经给出强章节证据，不要继续无边界扩检；只补还没覆盖的必要槽位。
-
-# Hard Rules
-1. 严禁仅凭 volume / plot 结果直接回答。
-2. 严禁高置信 hybrid 命中后再回头先扫 `retrieve_volumes`。
-3. 严禁连续两次用相同参数调用同一工具。
-4. 严禁在没有真实坐标时盲猜章节号。
-5. 严禁把“流程完整”置于“证据充分”之上。
-6. 严禁输出冗长的过程 narration；把 token 留给检索和答案。
-"""
-
 
 # 用于 `agent/deepSearch.py` 的通用上下文压缩提示词，负责将工具原始返回压缩成可下潜的坐标与关键信息。
 COMPRESSION_PROMPT = """

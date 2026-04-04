@@ -49,6 +49,7 @@ def test_gitignore_blocks_local_private_state_for_public_repo():
         "uploaded_files/",
         "data/book/",
         "data/picture/",
+        "data/config/",
         "data/logs/",
     ]:
         assert token in content, f"missing ignore rule: {token}"
@@ -63,6 +64,7 @@ def test_dockerignore_blocks_local_state_and_private_inputs():
         ".states/",
         ".worktrees/",
         "uploaded_files/",
+        "data/config/",
         "data/logs/",
         "*.db",
     ]:
@@ -83,6 +85,10 @@ def test_env_example_declares_public_safe_defaults():
         "LLM_BASE_URL=https://your-llm-base-url",
         "LLM_MODEL=your-llm-model",
         "AGENT_RUNTIME_PREWARM_ENABLED=0",
+        "HYBRID_DENSE_RETRIEVAL_ENABLED=0",
+        "RERANK_PROVIDER=local",
+        "RERANK_DISABLED=1",
+        "RERANK_BASE_URL=http://rerank-local:8000/rerank",
         "MYSQL_DSN=mysql+pymysql://story2memory:change-me-story2memory-db-password@mysql:3306/novel_cognition",
     ]
     for line in required_lines:
@@ -104,12 +110,14 @@ def test_app_container_files_define_public_reflex_runtime():
     assert "python -m core.public_runtime" in entrypoint_content
     assert "reflex run --env prod" in entrypoint_content
     assert "${STORY2MEMORY_ENV_FILE:-.env}" in compose_content
+    assert "STORY2MEMORY_ENV_OVERRIDE: /app/data/config/runtime.env" in compose_content
 
 
 def test_app_container_persists_uploaded_books_and_covers():
     compose_content = _read("docker-compose.yml")
     assert "./data/book:/app/data/book" in compose_content
     assert "./data/picture:/app/data/picture" in compose_content
+    assert "./data/config:/app/data/config" in compose_content
 
 
 def test_character_table_schema_defaults_need_delete_to_no():

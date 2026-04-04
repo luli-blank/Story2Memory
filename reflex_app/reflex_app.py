@@ -11,6 +11,7 @@ from .frontend.character_detail import character_detail_view
 from .frontend.common import glass_panel
 from .frontend.detail import detail_view
 from .frontend.relation_graph import relation_graph_view
+from .frontend.startup_setup import startup_setup_view
 from .state import ConfirmedEvidence, ChatMessage, NovelState
 
 ROOT_DIR = Path(__file__).resolve().parents[1]
@@ -216,52 +217,62 @@ def analysis_popup() -> rx.Component:
 def index() -> rx.Component:
     return rx.box(
         rx.cond(
-            NovelState.page_mode == "relation_graph",
+            NovelState.page_mode == "startup_setup",
             rx.box(
-                relation_graph_view(),
-                max_width="1600px",
+                startup_setup_view(),
+                max_width="1320px",
                 margin="0 auto",
                 padding="1.2rem",
                 min_height="100vh",
             ),
-            rx.box(
-                rx.hstack(
-                    rx.vstack(
-                        rx.box(
-                            rx.cond(
-                                NovelState.page_mode == "detail",
-                                detail_view(),
+            rx.cond(
+                NovelState.page_mode == "relation_graph",
+                rx.box(
+                    relation_graph_view(),
+                    max_width="1600px",
+                    margin="0 auto",
+                    padding="1.2rem",
+                    min_height="100vh",
+                ),
+                rx.box(
+                    rx.hstack(
+                        rx.vstack(
+                            rx.box(
                                 rx.cond(
-                                    NovelState.page_mode == "character_archive",
-                                    character_archive_view(),
+                                    NovelState.page_mode == "detail",
+                                    detail_view(),
                                     rx.cond(
-                                        NovelState.page_mode == "character_detail",
-                                        character_detail_view(),
-                                        bookshelf_view(),
+                                        NovelState.page_mode == "character_archive",
+                                        character_archive_view(),
+                                        rx.cond(
+                                            NovelState.page_mode == "character_detail",
+                                            character_detail_view(),
+                                            bookshelf_view(),
+                                        ),
                                     ),
                                 ),
+                                width="100%",
                             ),
-                            width="100%",
+                            rx.cond(NovelState.page_mode == "detail", confirmed_evidence_panel(), rx.box()),
+                            flex="3",
+                            width="75%",
+                            align="stretch",
+                            spacing="4",
                         ),
-                        rx.cond(NovelState.page_mode == "detail", confirmed_evidence_panel(), rx.box()),
-                        flex="3",
-                        width="75%",
-                        align="stretch",
-                        spacing="4",
+                        rx.box(
+                            chat_panel(),
+                            flex="1",
+                            width="25%",
+                        ),
+                        align="start",
+                        spacing="5",
+                        width="100%",
                     ),
-                    rx.box(
-                        chat_panel(),
-                        flex="1",
-                        width="25%",
-                    ),
-                    align="start",
-                    spacing="5",
-                    width="100%",
+                    max_width="1600px",
+                    margin="0 auto",
+                    padding="1.2rem",
+                    min_height="100vh",
                 ),
-                max_width="1600px",
-                margin="0 auto",
-                padding="1.2rem",
-                min_height="100vh",
             ),
         ),
         analysis_popup(),
@@ -280,4 +291,4 @@ app = rx.App(
 PICTURE_DIR.mkdir(parents=True, exist_ok=True)
 if not any(getattr(route, "path", None) == "/covers" for route in app._api.routes):
     app._api.mount("/covers", StaticFiles(directory=str(PICTURE_DIR)), name="covers")
-app.add_page(index, title="Story2Memory · Reflex", on_load=NovelState.load_books)
+app.add_page(index, title="Story2Memory · Reflex", on_load=NovelState.initialize_app)

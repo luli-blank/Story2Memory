@@ -61,8 +61,3 @@ Fallback/runtime-compatible single-query output may still include:
 - If query clearly names a role/organization/rule/special existence, prefer high-confidence alias grounding before broad entity retrieval.
 - Avoid repeated same tool+same args loops.
 - If planner output is invalid or times out, runtime must fall back safely to rule-based planning.
-
-## Usage
-```bash
-python agent/skills/retrieval_route_skill/demo.py
-```

@@ -16,7 +16,14 @@ import plotly.graph_objects as go
 
 import reflex as rx
 
-from core.public_runtime import is_agent_runtime_prewarm_enabled
+from core.public_runtime import (
+    build_startup_settings,
+    get_runtime_override_path,
+    is_agent_runtime_prewarm_enabled,
+    request_runtime_restart,
+    validate_startup_settings,
+    write_startup_settings,
+)
 
 DEFAULT_COVER_URL = "https://placehold.co/150x200"
 MAX_CHAT_MESSAGES = 60
@@ -366,11 +373,28 @@ class RelationGraphCanvasEdgeView(pydantic.BaseModel):
 class NovelState(rx.State):
     default_books: list[Book] = []
     uploaded_books: list[Book] = []
-    page_mode: str = "bookshelf"
+    page_mode: str = "startup_setup"
     current_book_id: int = 0
     current_novel: str = ""
     current_character_id: int = 0
     current_character_name: str = ""
+    startup_feedback: str = ""
+    startup_feedback_is_error: bool = False
+    startup_last_saved_at: str = ""
+    setup_llm_api_key: str = ""
+    setup_llm_base_url: str = ""
+    setup_llm_model: str = ""
+    setup_vector_retrieval_enabled: bool = False
+    setup_embed_api_key: str = ""
+    setup_embed_base_url: str = ""
+    setup_embed_model: str = ""
+    setup_qdrant_url: str = "http://qdrant:6333"
+    setup_rerank_enabled: bool = False
+    setup_rerank_provider: str = "local"
+    setup_rerank_base_url: str = "http://rerank-local:8000/rerank"
+    setup_rerank_api_key: str = ""
+    setup_rerank_model: str = "BAAI/bge-reranker-v2-m3"
+    setup_prewarm_enabled: bool = False
     chat_mode: str = "qa"
     chat_input: str = ""
     is_generating: bool = False
@@ -496,6 +520,146 @@ class NovelState(rx.State):
     @rx.var
     def character_archive_next_disabled(self) -> bool:
         return int(self.character_archive_page or 1) >= int(self.character_archive_total_pages or 1)
+
+    @rx.var
+    def startup_validation_errors(self) -> list[str]:
+        return validate_startup_settings(self._startup_settings_payload())
+
+    @rx.var
+    def startup_status_label(self) -> str:
+        if self.startup_validation_errors:
+            return "未完成配置"
+        if self.setup_vector_retrieval_enabled or self.setup_rerank_enabled:
+            return "高级检索已启用"
+        return "基础可用"
+
+    @rx.var
+    def startup_status_accent(self) -> str:
+        if self.startup_validation_errors:
+            return "#fda4af"
+        if self.setup_vector_retrieval_enabled or self.setup_rerank_enabled:
+            return "#67e8f9"
+        return "#86efac"
+
+    @rx.var
+    def startup_save_button_text(self) -> str:
+        return "保存配置"
+
+    @rx.var
+    def startup_apply_button_disabled(self) -> bool:
+        return bool(self.startup_validation_errors)
+
+    @rx.var
+    def startup_runtime_path_label(self) -> str:
+        return str(get_runtime_override_path())
+
+    def _startup_settings_payload(self) -> dict[str, Any]:
+        return {
+            "llm_api_key": self.setup_llm_api_key,
+            "llm_base_url": self.setup_llm_base_url,
+            "llm_model": self.setup_llm_model,
+            "vector_retrieval_enabled": bool(self.setup_vector_retrieval_enabled),
+            "embed_api_key": self.setup_embed_api_key,
+            "embed_base_url": self.setup_embed_base_url,
+            "embed_model": self.setup_embed_model,
+            "qdrant_url": self.setup_qdrant_url,
+            "rerank_enabled": bool(self.setup_rerank_enabled),
+            "rerank_provider": self.setup_rerank_provider,
+            "rerank_base_url": self.setup_rerank_base_url,
+            "rerank_api_key": self.setup_rerank_api_key,
+            "rerank_model": self.setup_rerank_model,
+            "prewarm_enabled": bool(self.setup_prewarm_enabled),
+        }
+
+    def load_startup_settings(self):
+        settings = build_startup_settings()
+        self.setup_llm_api_key = str(settings.get("llm_api_key", "") or "")
+        self.setup_llm_base_url = str(settings.get("llm_base_url", "") or "")
+        self.setup_llm_model = str(settings.get("llm_model", "") or "")
+        self.setup_vector_retrieval_enabled = bool(settings.get("vector_retrieval_enabled", False))
+        self.setup_embed_api_key = str(settings.get("embed_api_key", "") or "")
+        self.setup_embed_base_url = str(settings.get("embed_base_url", "") or "")
+        self.setup_embed_model = str(settings.get("embed_model", "") or "")
+        self.setup_qdrant_url = str(settings.get("qdrant_url", "http://qdrant:6333") or "http://qdrant:6333")
+        self.setup_rerank_enabled = bool(settings.get("rerank_enabled", False))
+        self.setup_rerank_provider = str(settings.get("rerank_provider", "local") or "local")
+        self.setup_rerank_base_url = str(settings.get("rerank_base_url", "http://rerank-local:8000/rerank") or "http://rerank-local:8000/rerank")
+        self.setup_rerank_api_key = str(settings.get("rerank_api_key", "") or "")
+        self.setup_rerank_model = str(settings.get("rerank_model", "BAAI/bge-reranker-v2-m3") or "BAAI/bge-reranker-v2-m3")
+        self.setup_prewarm_enabled = bool(settings.get("prewarm_enabled", False))
+
+    def initialize_app(self):
+        self.load_books()
+        self.load_startup_settings()
+        self.page_mode = "startup_setup"
+
+    def enter_bookshelf(self):
+        self.page_mode = "bookshelf"
+        self.load_books()
+
+    def save_startup_config(self):
+        target = write_startup_settings(self._startup_settings_payload())
+        self.startup_last_saved_at = time.strftime("%Y-%m-%d %H:%M:%S")
+        self.startup_feedback = f"配置已保存到 {target}，应用并重启后生效。"
+        self.startup_feedback_is_error = False
+
+    async def apply_startup_config(self):
+        errors = validate_startup_settings(self._startup_settings_payload())
+        if errors:
+            self.startup_feedback = "配置未完成：\n" + "\n".join(errors)
+            self.startup_feedback_is_error = True
+            return
+        self.save_startup_config()
+        self.startup_feedback = "配置已保存，正在应用并重启服务..."
+        self.startup_feedback_is_error = False
+        yield
+        request_runtime_restart()
+
+    def open_startup_setup(self):
+        self.load_startup_settings()
+        self.page_mode = "startup_setup"
+
+    def set_setup_llm_api_key(self, value: str):
+        self.setup_llm_api_key = value
+
+    def set_setup_llm_base_url(self, value: str):
+        self.setup_llm_base_url = value
+
+    def set_setup_llm_model(self, value: str):
+        self.setup_llm_model = value
+
+    def set_setup_vector_retrieval_enabled(self, value: bool):
+        self.setup_vector_retrieval_enabled = bool(value)
+
+    def set_setup_embed_api_key(self, value: str):
+        self.setup_embed_api_key = value
+
+    def set_setup_embed_base_url(self, value: str):
+        self.setup_embed_base_url = value
+
+    def set_setup_embed_model(self, value: str):
+        self.setup_embed_model = value
+
+    def set_setup_qdrant_url(self, value: str):
+        self.setup_qdrant_url = value
+
+    def set_setup_rerank_enabled(self, value: bool):
+        self.setup_rerank_enabled = bool(value)
+
+    def set_setup_rerank_provider(self, value: str):
+        self.setup_rerank_provider = value
+
+    def set_setup_rerank_base_url(self, value: str):
+        self.setup_rerank_base_url = value
+
+    def set_setup_rerank_api_key(self, value: str):
+        self.setup_rerank_api_key = value
+
+    def set_setup_rerank_model(self, value: str):
+        self.setup_rerank_model = value
+
+    def set_setup_prewarm_enabled(self, value: bool):
+        self.setup_prewarm_enabled = bool(value)
 
     def open_book(self, book_id: int, title: str):
         self.current_book_id = int(book_id or 0)

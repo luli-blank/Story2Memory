@@ -35,11 +35,14 @@ docker compose up --build
 - Reflex backend / health endpoints: `http://127.0.0.1:8000`
 - MySQL: `127.0.0.1:13306`
 
+启动后会先进入 Web 启动配置页。你可以在页面里填写 LLM 配置，并按需启用向量召回 / rerank，再点击“进入书架”进入原有书架界面。
+
 默认仅本机访问。公开版不会默认开放局域网或公网访问。如果你需要对外暴露，请自行增加反向代理、鉴权和网络层访问控制。
 
 ## Runtime Notes
 
 - 公开版默认 `AGENT_RUNTIME_PREWARM_ENABLED=0`，启动阶段不会主动预热外部 LLM 运行时。
+- 公开版默认 `HYBRID_DENSE_RETRIEVAL_ENABLED=0`、`RERANK_DISABLED=1`，高级检索能力默认关闭，需要在启动页显式启用。
 - 应用可以在没有真实 LLM 调用的情况下完成“启动级”验证。
 - 分析、聊天、角色扮演等模型相关功能，仍然需要你补齐真实的 LLM / Embedding 配置。
 

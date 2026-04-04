@@ -583,55 +583,6 @@ CHARACTER_PROFILE_SLICE_PROMPT = """
 }}
 """
 
-CHARACTER_PROFILE_FINAL_PROMPT = """
-你是一位严格的小说角色档案主编。
-
-目标角色：{character_name}
-角色别名：{aliases_json}
-首次出现章节：{first_chapter_index}
-最后出现章节：{last_chapter_index}
-记录总数：{record_count}
-
-下面给出该角色按窗口整理后的阶段画像切片：
-{profile_slices_json}
-
-下面给出该角色经过关键章节正文精修后形成的卷级中间摘要：
-{profile_volume_groups_json}
-
-请基于这些切片和卷级中间摘要汇总最终角色画像。不要编造，不要遗漏明显阶段变化。
-
-输出必须是合法 JSON，对应如下结构：
-{{
-  "identity": {{
-    "summary": "角色整体身份与定位总结",
-    "aliases": ["别名1", "别名2"],
-    "first_chapter_index": {first_chapter_index},
-    "last_chapter_index": {last_chapter_index}
-  }},
-  "narrative_role": ["主角/核心配角/阶段角色等叙事定位"],
-  "personality_and_style": ["性格、行为风格、说话风格"],
-  "appearance": ["外貌、装束、可识别视觉特征"],
-  "goals_and_motivation": ["长期目标、阶段目标、核心驱动力"],
-  "stance_and_alignment": ["立场、阵营、组织归属变化"],
-  "abilities_and_resources": ["能力体系、关键物品、关键资源"],
-  "stable_profile": ["长期稳定特征"],
-  "volume_arc": [
-    {{
-      "volume_index": 0,
-      "volume_title": "卷名",
-      "summary": "该卷中的角色阶段总结",
-      "role_in_volume": ["该卷中的角色定位"],
-      "goals": ["该卷中的主要目标"],
-      "state_changes": ["该卷中的状态或立场变化"],
-      "relationship_changes": ["该卷中的关键关系变化"]
-    }}
-  ],
-  "current_state": ["基于最后阶段得出的当前状态"],
-  "turning_points": ["改变角色轨迹的关键节点"],
-  "key_events": ["跨阶段关键转折"]
-}}
-"""
-
 CHARACTER_PROFILE_IDENTITY_ROLE_PROMPT = """
 你是一位严格的小说角色档案编辑。
 
@@ -829,56 +780,6 @@ CHARACTER_PROFILE_VOLUME_GROUP_PROMPT = """
 }}
 """
 
-CHARACTER_RELATION_SUMMARY_PROMPT = """
-你是一位严格的小说人物关系编辑。
-
-目标角色：{character_name}
-关系对象：{target_character_name}
-
-下面给出这条人物关系按章节范围整理后的历史记录：
-{history_json}
-
-下面给出这条人物关系经过正文精修后形成的卷级中间摘要：
-{relation_volume_groups_json}
-
-任务：
-1. 总结目标角色与关系对象之间的整体关系。
-2. 保留并输出每段关系历史，必须明确章节范围。
-3. 尽量区分结构关系、行动关系、情感关系，以及关系当前状态。
-4. 优先使用卷级中间摘要修正关系判断。
-5. 不得编造，不得删除已有章节范围信息。
-
-输出必须是合法 JSON，对应如下结构：
-{{
-  "summary": "整体关系总结，需提到关键章节范围",
-  "structural_relation": ["同学/亲属/上下级/同阵营等结构关系"],
-  "action_relation": ["合作/保护/利用/追杀/命令等行动关系"],
-  "emotional_relation": ["信任/依赖/警惕/厌恶/爱慕等情感关系"],
-  "directionality": "关系是否单向或双向，以及谁更主动",
-  "stability": "长期稳定/阶段性/短期事件性",
-  "current_status": "当前关系状态",
-  "drivers": ["利益/情感/生存/阵营/权力等驱动"],
-  "history_json": [
-    {{
-      "chapter_start": 0,
-      "chapter_end": 0,
-      "relation_type": "关系类型",
-      "structural_relation": ["该阶段的结构关系"],
-      "action_relation": ["该阶段的行动关系"],
-      "emotional_relation": ["该阶段的情感关系"],
-      "polarity": "positive|neutral|negative|mixed",
-      "strength": "weak|medium|strong",
-      "directionality": "该阶段谁更主动或更依赖",
-      "stability": "该阶段关系稳定度",
-      "current_status": "该阶段关系状态",
-      "drivers": ["该阶段关系驱动"],
-      "summary": "该范围内的关系说明",
-      "evidence_chapters": [0]
-    }}
-  ]
-}}
-"""
-
 CHARACTER_RELATION_OVERVIEW_PROMPT = """
 你是一位严格的小说人物关系总览编辑。
 
@@ -938,43 +839,6 @@ CHARACTER_RELATION_DYNAMICS_PROMPT = """
   "directionality": "方向性",
   "stability": "稳定度",
   "drivers": ["最多5条驱动因素"]
-}}
-"""
-
-CHARACTER_RELATION_HISTORY_PROMPT = """
-你是一位严格的小说人物关系时间线编辑。
-
-目标角色：{character_name}
-关系对象：{target_character_name}
-
-下面给出这条人物关系按章节范围整理后的历史记录：
-{history_json}
-
-下面给出这条人物关系经过正文精修后形成的卷级中间摘要：
-{relation_volume_groups_json}
-
-请只输出结构化 `history_json`，每段必须明确章节范围，内容尽量精炼，不得编造。
-
-输出必须是合法 JSON，对应如下结构：
-{{
-  "history_json": [
-    {{
-      "chapter_start": 0,
-      "chapter_end": 0,
-      "relation_type": "关系类型",
-      "structural_relation": ["该阶段的结构关系"],
-      "action_relation": ["该阶段的行动关系"],
-      "emotional_relation": ["该阶段的情感关系"],
-      "polarity": "positive|neutral|negative|mixed",
-      "strength": "weak|medium|strong",
-      "directionality": "该阶段谁更主动或更依赖",
-      "stability": "该阶段关系稳定度",
-      "current_status": "该阶段关系状态",
-      "drivers": ["该阶段关系驱动"],
-      "summary": "该范围内的关系说明",
-      "evidence_chapters": [0]
-    }}
-  ]
 }}
 """
 

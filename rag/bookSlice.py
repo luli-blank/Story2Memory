@@ -100,7 +100,6 @@ def apply_overlong_chapter_split(
             )
             continue
 
-        total_parts = len(pieces)
         for part_index, piece in enumerate(pieces, start=1):
             normalized_chapters.append(
                 {

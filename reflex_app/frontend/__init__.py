@@ -10,6 +10,7 @@ from .common import (
 )
 from .detail import detail_view
 from .relation_graph import relation_graph_view
+from .startup_setup import startup_setup_view
 
 __all__ = [
     "archive_section_heading",
@@ -22,4 +23,5 @@ __all__ = [
     "detail_view",
     "glass_panel",
     "relation_graph_view",
+    "startup_setup_view",
 ]

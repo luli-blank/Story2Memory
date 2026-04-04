@@ -36,7 +36,7 @@ from agent.hybridSearch import (
     warm_hybrid_runtime,
 )
 from agent.graph import apply_llm_network_settings, wrap_tracked_llm
-from agent.skills.retrieval_route_skill.route_skill import plan_multi_search_route, plan_search_route
+from agent.skills.retrieval_route_skill.route_skill import plan_multi_search_route
 from database.qdrant_client import get_qdrant_embedding_store
 
 logger = logging.getLogger(__name__)
@@ -1909,159 +1909,6 @@ def _coordinate_signature(evidence_items: list[EvidenceItem]) -> set[tuple[str, 
     return signature
 
 
-def _should_enter_recovery(
-    *,
-    recovery_policy: dict[str, Any],
-    evidence_items: list[EvidenceItem],
-    confidence: float,
-    used_tools: list[dict[str, Any]],
-    fulltext_windows: int,
-) -> tuple[bool, str]:
-    if not recovery_policy.get("enabled", False):
-        return False, "disabled"
-    if _has_stable_chapter_evidence(evidence_items):
-        return False, "stable_chapter_evidence_present"
-    if len(used_tools) >= MAX_TOOL_CALLS:
-        return False, "tool_budget_exhausted"
-    if fulltext_windows >= MAX_FULLTEXT_WINDOWS:
-        return False, "fulltext_budget_exhausted"
-    if not evidence_items:
-        return True, "no_chapter_evidence"
-    if confidence < RECOVERY_CONFIDENCE_THRESHOLD:
-        return True, "low_confidence"
-    if _has_conflicting_evidence(evidence_items):
-        return True, "conflicting_evidence"
-    return False, "not_needed"
-
-
-def _run_recovery_mode(
-    *,
-    user_query: str,
-    intent_type: str,
-    rewrites: dict[str, Any],
-    used_tools: list[dict[str, Any]],
-    evidence_items: list[EvidenceItem],
-    grounding: dict[str, Any],
-    candidate_window: tuple[int, int] | None,
-    recovery_policy: dict[str, Any],
-    novel_title: str,
-    book_id: int,
-    request_id: str,
-    summary_payload: dict[str, Any] | None,
-    fulltext_windows: int,
-) -> tuple[list[dict[str, Any]], list[EvidenceItem], tuple[int, int] | None, dict[str, Any] | None, int, list[dict[str, Any]]]:
-    recovery_trace: list[dict[str, Any]] = []
-    local_summary_payload = summary_payload
-    local_candidate_window = candidate_window
-    local_fulltext_windows = int(fulltext_windows)
-    no_new_coordinates_streak = 0
-
-    for step_index in range(1, min(int(recovery_policy.get("max_steps", RECOVERY_MAX_STEPS)), RECOVERY_MAX_STEPS) + 1):
-        if _has_stable_chapter_evidence(evidence_items):
-            recovery_trace.append({"step": step_index, "stopped": True, "reason": "stable_chapter_evidence_present"})
-            break
-
-        remaining_tool_budget = max(0, MAX_TOOL_CALLS - len(used_tools))
-        remaining_fulltext_budget = max(0, RECOVERY_MAX_EXTRA_FULLTEXT_READS - max(0, local_fulltext_windows - fulltext_windows))
-        if remaining_tool_budget <= 0 or remaining_fulltext_budget < 0:
-            recovery_trace.append({"step": step_index, "stopped": True, "reason": "budget_exhausted"})
-            break
-
-        try:
-            planner_action = _plan_recovery_action(
-                user_query=user_query,
-                intent_type=intent_type,
-                rewrites=rewrites,
-                used_tools=used_tools,
-                evidence_items=evidence_items,
-                grounding=grounding,
-                candidate_window=local_candidate_window,
-                recovery_policy=recovery_policy,
-                remaining_tool_budget=remaining_tool_budget,
-                remaining_fulltext_budget=remaining_fulltext_budget,
-            )
-        except Exception as exc:
-            recovery_trace.append({"step": step_index, "stopped": True, "reason": f"planner_error:{exc}"})
-            break
-
-        tool_name, args, planner_reason = _normalize_recovery_action(
-            action=planner_action,
-            rewrites=rewrites,
-            user_query=user_query,
-            novel_title=novel_title,
-            book_id=book_id,
-            request_id=request_id,
-            intent_type=intent_type,
-            candidate_window=local_candidate_window,
-            grounding=grounding,
-            recovery_policy=recovery_policy,
-        )
-        if not tool_name:
-            recovery_trace.append(
-                {
-                    "step": step_index,
-                    "planner_action": planner_action,
-                    "stopped": True,
-                    "reason": planner_reason,
-                }
-            )
-            break
-
-        signature = (tool_name, json.dumps(args, ensure_ascii=False, sort_keys=True))
-        if any((item.get("tool"), json.dumps(item.get("args", {}), ensure_ascii=False, sort_keys=True)) == signature for item in used_tools):
-            recovery_trace.append(
-                {
-                    "step": step_index,
-                    "planner_action": planner_action,
-                    "stopped": True,
-                    "reason": "repeated_same_tool_same_args",
-                }
-            )
-            break
-
-        before_coordinates = _coordinate_signature(evidence_items)
-        invoked = _invoke_tool(tool_name, args)
-        used_tools.append(invoked)
-        if tool_name == "retrieve_chapters":
-            local_fulltext_windows += 1
-        payload = invoked.get("payload") if isinstance(invoked.get("payload"), dict) else None
-        new_evidence = _normalize_tool_evidence(
-            tool_name=tool_name,
-            raw=str(invoked.get("raw", "") or ""),
-            payload=payload,
-        )
-        if new_evidence:
-            evidence_items = _merge_evidence(evidence_items + new_evidence)
-        if tool_name == "retrieve_chapter_summaries" and isinstance(payload, dict):
-            local_summary_payload = payload
-        after_coordinates = _coordinate_signature(evidence_items)
-        if after_coordinates == before_coordinates:
-            no_new_coordinates_streak += 1
-        else:
-            no_new_coordinates_streak = 0
-
-        local_candidate_window = _pick_candidate_window(
-            book_id=int(book_id),
-            intent_type=intent_type,
-            evidence_items=evidence_items,
-        )
-        recovery_trace.append(
-            {
-                "step": step_index,
-                "planner_action": planner_action,
-                "tool": tool_name,
-                "args": args,
-                "planner_reason": planner_reason,
-                "new_coordinates_found": after_coordinates != before_coordinates,
-                "candidate_window": list(local_candidate_window) if local_candidate_window else None,
-                "results_count": len(payload.get("results", []) if isinstance(payload, dict) and isinstance(payload.get("results"), list) else new_evidence),
-            }
-        )
-        if no_new_coordinates_streak >= 2:
-            recovery_trace.append({"step": step_index, "stopped": True, "reason": "no_new_coordinates_twice"})
-            break
-
-    return used_tools, evidence_items, local_candidate_window, local_summary_payload, local_fulltext_windows, recovery_trace
 def _build_compact_search_packet(result: dict[str, Any]) -> dict[str, Any]:
     evidence_rows = result.get("evidence", []) if isinstance(result.get("evidence"), list) else []
     compact_evidence: list[dict[str, Any]] = []
@@ -2263,33 +2110,6 @@ def _build_single_subquery_answer(section: dict[str, Any]) -> str:
     return "\n".join(lines)
 
 
-def _build_rendered_answer(
-    *,
-    route_type: str,
-    evidence_items: list[EvidenceItem],
-    citations: list[str],
-    confidence: float,
-) -> str:
-    if not evidence_items:
-        return "未找到足够稳定的章节级证据，暂时无法给出可靠答案。"
-
-    lead = _stringify_content(evidence_items[0].snippet) or "已定位到可回答问题的关键证据。"
-    lines = [f"结论：{lead}"]
-    secondary = [
-        _stringify_content(item.snippet)
-        for item in evidence_items[1:3]
-        if _stringify_content(item.snippet)
-    ]
-    if secondary:
-        lines.append("依据：")
-        for item in secondary:
-            lines.append(f"- {item}")
-    if citations:
-        lines.append(f"定位：{', '.join(citations)}")
-    lines.append(f"检索路径：{route_type}，置信度={confidence:.2f}")
-    return "\n".join(lines)
-
-
 def _estimate_confidence(
     *,
     evidence_items: list[EvidenceItem],
@@ -2312,41 +2132,6 @@ def _estimate_confidence(
     if len(used_tools) >= 4 and confidence > 0.1:
         confidence = min(0.95, confidence + 0.03)
     return round(confidence, 3)
-
-
-def _run_parallel_entry_tools(
-    *,
-    entry_tools: Sequence[str],
-    rewrites: dict[str, Any],
-    user_query: str,
-    novel_title: str,
-    book_id: int,
-    request_id: str,
-    intent_type: str,
-    grounding: dict[str, Any] | None = None,
-) -> list[dict[str, Any]]:
-    planned_tools = [tool_name for tool_name in entry_tools if tool_name in _tool_registry()]
-    if not planned_tools:
-        return []
-    with ThreadPoolExecutor(max_workers=min(len(planned_tools), 3)) as executor:
-        futures = [
-            executor.submit(
-                _invoke_tool,
-                tool_name,
-                _build_entry_args(
-                    tool_name,
-                    rewrites=rewrites,
-                    user_query=user_query,
-                    novel_title=novel_title,
-                    book_id=book_id,
-                    request_id=request_id,
-                    intent_type=intent_type,
-                    grounding=grounding,
-                ),
-            )
-            for tool_name in planned_tools
-        ]
-    return [future.result() for future in futures]
 
 
 def _build_subquery_states(multi_plan: dict[str, Any]) -> list[SubqueryState]:
@@ -2482,89 +2267,6 @@ def _refresh_subquery_rewrites_from_evidence(
     )
     if refined != rewrites:
         state.plan["query_rewrites"] = refined
-
-
-def _resolve_subquery_fixed_path(
-    *,
-    state: SubqueryState,
-    evidence_pool: list[EvidenceItem],
-    book_id: int,
-    novel_title: str,
-    request_id: str,
-    grounding: dict[str, Any],
-    global_tool_budget: int,
-    fulltext_windows_used: int,
-    global_fulltext_budget: int,
-) -> tuple[list[EvidenceItem], int, int, list[dict[str, Any]]]:
-    executed_tools: list[dict[str, Any]] = []
-    rewrites = dict(state.plan.get("query_rewrites", {}) or {})
-    local_evidence = _subquery_local_evidence(evidence_pool, state.subquery_id)
-    state.candidate_window = _pick_candidate_window(
-        book_id=book_id,
-        intent_type=state.intent_type,
-        evidence_items=local_evidence,
-    ) if local_evidence else None
-
-    summary_payload: dict[str, Any] | None = None
-    if state.candidate_window and global_tool_budget > 0:
-        verify = _invoke_tool(
-            "retrieve_chapter_summaries",
-            {
-                "book_id": int(book_id),
-                "start_chapter_index": int(state.candidate_window[0]),
-                "end_chapter_index": int(state.candidate_window[1]),
-                "intent": str(rewrites.get("chapter_query") or state.user_goal),
-            },
-        )
-        executed_tools.append(verify)
-        evidence_pool = _apply_tool_result_to_state(state=state, tool_result=verify, evidence_pool=evidence_pool)
-        summary_payload = verify.get("payload") if isinstance(verify.get("payload"), dict) else None
-        global_tool_budget -= 1
-
-    local_evidence = _subquery_local_evidence(evidence_pool, state.subquery_id)
-    state.candidate_window = _pick_candidate_window(
-        book_id=book_id,
-        intent_type=state.intent_type,
-        evidence_items=local_evidence,
-    ) if local_evidence else state.candidate_window
-    state.confidence = _estimate_confidence(evidence_items=local_evidence, used_tools=state.used_tools)
-
-    needs_fulltext = (
-        state.candidate_window is not None
-        and global_tool_budget > 0
-        and fulltext_windows_used < global_fulltext_budget
-        and _needs_fulltext(
-            intent_type=state.intent_type,
-            summary_payload=summary_payload,
-            confidence=state.confidence,
-            user_query=state.user_goal,
-        )
-    )
-    if needs_fulltext:
-        fulltext_window = state.candidate_window
-        if isinstance(summary_payload, dict):
-            fulltext_window = _window_from_hits(
-                [int(item) for item in summary_payload.get("hit_chapters", []) if _to_positive_int(item)],
-                state.candidate_window,
-            )
-        chapter_read = _invoke_tool(
-            "retrieve_chapters",
-            {
-                "book_id": int(book_id),
-                "start_chapter_index": int(fulltext_window[0]),
-                "end_chapter_index": int(fulltext_window[1]),
-                "intent": str(rewrites.get("fulltext_query") or state.user_goal),
-            },
-        )
-        executed_tools.append(chapter_read)
-        evidence_pool = _apply_tool_result_to_state(state=state, tool_result=chapter_read, evidence_pool=evidence_pool)
-        global_tool_budget -= 1
-        fulltext_windows_used += 1
-
-    _update_subquery_window_and_confidence_for_book(state=state, evidence_pool=evidence_pool, book_id=book_id)
-    if state.status != "resolved":
-        state.status = "unresolved"
-    return evidence_pool, global_tool_budget, fulltext_windows_used, executed_tools
 
 
 def _should_enter_subquery_recovery(

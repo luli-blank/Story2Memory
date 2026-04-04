@@ -107,9 +107,12 @@ services:
     restart: unless-stopped
     env_file:
       - ${STORY2MEMORY_ENV_FILE:-.env}
+    environment:
+      STORY2MEMORY_ENV_OVERRIDE: /app/data/config/runtime.env
     volumes:
       - ./data/book:/app/data/book
       - ./data/picture:/app/data/picture
+      - ./data/config:/app/data/config
     depends_on:
       mysql:
         condition: service_healthy

@@ -6,16 +6,49 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 import agent.hybridSearch as hybrid_search
 
 
-def test_rerank_candidates_always_falls_back_without_rerank(monkeypatch):
+def test_rerank_candidates_calls_rerank_client_when_enabled(monkeypatch):
     candidates = [
         {"id": 1, "fused_score": 0.9, "payload": {"chapter_summary": "alpha"}},
         {"id": 2, "fused_score": 0.8, "payload": {"chapter_summary": "beta"}},
     ]
 
     monkeypatch.setenv("RERANK_DISABLED", "0")
+    calls: list[tuple[str, list[str], int]] = []
+
+    class FakeRerankClient:
+        def rerank(self, query, documents, top_n):
+            calls.append((query, list(documents), top_n))
+            return [
+                {"index": 1, "score": 0.99},
+                {"index": 0, "score": 0.75},
+            ]
+
+    monkeypatch.setattr(hybrid_search, "_get_rerank_client", lambda: FakeRerankClient())
+
+    ranked, rerank_mode = hybrid_search._rerank_candidates(
+        query="test query",
+        candidates=candidates,
+        text_field="chapter_summary",
+        top_n=2,
+    )
+
+    assert calls == [("test query", ["alpha", "beta"], 2)]
+    assert rerank_mode == "reranked"
+    assert [item["id"] for item in ranked] == [2, 1]
+    assert [item["rerank_rank"] for item in ranked] == [1, 2]
+    assert [item["rerank_score"] for item in ranked] == [0.99, 0.75]
+
+
+def test_rerank_candidates_falls_back_when_rerank_disabled(monkeypatch):
+    candidates = [
+        {"id": 1, "fused_score": 0.9, "payload": {"chapter_summary": "alpha"}},
+        {"id": 2, "fused_score": 0.8, "payload": {"chapter_summary": "beta"}},
+    ]
+
+    monkeypatch.setenv("RERANK_DISABLED", "1")
 
     def _unexpected_rerank_client():
-        raise AssertionError("rerank client should not be used")
+        raise AssertionError("rerank client should not be used when disabled")
 
     monkeypatch.setattr(hybrid_search, "_get_rerank_client", _unexpected_rerank_client)
 

@@ -1338,7 +1338,7 @@ def summarize_book_chapters(title: str) -> dict[str, Any]:
 
                 chapter_changed = not has_all_summaries
                 logger.warning("[分析进度][book=%s] 开始情节聚类...", book_id)
-                plot_segmentation_stats = PlotSegmentationEngine().run(book_id)
+                PlotSegmentationEngine().run(book_id)
                 logger.warning("[分析进度][book=%s] 开始生成情节摘要并入库...", book_id)
                 plot_stats = PlotRecordBuilder().run(book_id)
                 plot_changed = not bool(plot_stats.get("skipped"))

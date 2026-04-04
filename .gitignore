@@ -8,6 +8,7 @@ __pycache__/
 data/logs/
 data/book/
 data/picture/
+data/config/
 uploaded_files/
 .worktrees/
 .env

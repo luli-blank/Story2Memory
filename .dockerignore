@@ -6,6 +6,7 @@ __pycache__/
 .states/
 .worktrees/
 data/logs/
+data/config/
 uploaded_files/
 *.pyc
 *.pyo
