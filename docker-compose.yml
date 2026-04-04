@@ -107,6 +107,9 @@ services:
     restart: unless-stopped
     env_file:
       - ${STORY2MEMORY_ENV_FILE:-.env}
+    volumes:
+      - ./data/book:/app/data/book
+      - ./data/picture:/app/data/picture
     depends_on:
       mysql:
         condition: service_healthy

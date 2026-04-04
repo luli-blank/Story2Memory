@@ -106,6 +106,17 @@ def test_app_container_files_define_public_reflex_runtime():
     assert "${STORY2MEMORY_ENV_FILE:-.env}" in compose_content
 
 
+def test_app_container_persists_uploaded_books_and_covers():
+    compose_content = _read("docker-compose.yml")
+    assert "./data/book:/app/data/book" in compose_content
+    assert "./data/picture:/app/data/picture" in compose_content
+
+
+def test_character_table_schema_defaults_need_delete_to_no():
+    create_tables = _read("database/mysql/create_tables.sql")
+    assert "`NEED_DELETE` ENUM('yes', 'no') NOT NULL DEFAULT 'no'" in create_tables
+
+
 def test_docker_compose_binds_only_public_app_ports_to_loopback():
     compose = _read("docker-compose.yml")
     assert '"127.0.0.1:13306:3306"' in compose

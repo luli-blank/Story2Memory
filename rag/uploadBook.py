@@ -486,6 +486,7 @@ def _empty_chapter_summary_payload() -> dict[str, Any]:
     return {
         "chapter_summary": "",
         "character": [],
+        "ambiguous_character_mentions": [],
         "special_existence": [],
         "organizations": [],
         "world_rules": [],
@@ -546,6 +547,59 @@ def _normalize_named_description_list(value: Any) -> list[dict[str, str]]:
     return normalized
 
 
+def _normalize_ambiguous_character_mentions(value: Any) -> list[dict[str, str]]:
+    if not isinstance(value, list):
+        return []
+
+    normalized: list[dict[str, str]] = []
+    seen: set[tuple[str, str, str]] = set()
+    for item in value:
+        if not isinstance(item, dict):
+            continue
+        surface_name = _pick_first_text(item, ("surface_name", "name", "title", "entity", "item", "label"))
+        description = _pick_first_text(
+            item,
+            ("description", "summary", "info", "content", "detail", "note", "text"),
+        )
+        evidence_excerpt = _pick_first_text(item, ("evidence_excerpt", "excerpt", "evidence", "quote"))
+        if not surface_name and not description and not evidence_excerpt:
+            continue
+        signature = (surface_name, description, evidence_excerpt)
+        if signature in seen:
+            continue
+        normalized.append(
+            {
+                "surface_name": surface_name,
+                "description": description,
+                "evidence_excerpt": evidence_excerpt,
+            }
+        )
+        seen.add(signature)
+    return normalized
+
+
+def _validate_ambiguous_character_mentions(raw_value: Any) -> tuple[bool, str]:
+    if not isinstance(raw_value, list):
+        return False, "ambiguous_character_mentions is not a list"
+
+    for index, item in enumerate(raw_value):
+        if not isinstance(item, dict):
+            return False, f"ambiguous_character_mentions[{index}] is not an object"
+        surface_name = _pick_first_text(item, ("surface_name", "name", "title", "entity", "item", "label"))
+        description = _pick_first_text(
+            item,
+            ("description", "summary", "info", "content", "detail", "note", "text"),
+        )
+        evidence_excerpt = _pick_first_text(item, ("evidence_excerpt", "excerpt", "evidence", "quote"))
+        if not surface_name:
+            return False, f"ambiguous_character_mentions[{index}] missing surface_name"
+        if not description:
+            return False, f"ambiguous_character_mentions[{index}] missing description"
+        if not evidence_excerpt:
+            return False, f"ambiguous_character_mentions[{index}] missing evidence_excerpt"
+    return True, ""
+
+
 def _validate_named_description_list(raw_value: Any, field_name: str) -> tuple[bool, str]:
     if not isinstance(raw_value, list):
         return False, f"{field_name} is not a list"
@@ -584,6 +638,9 @@ def _normalize_chapter_summary_payload(raw_obj: dict[str, Any] | None, fallback_
     payload = _empty_chapter_summary_payload()
     payload["chapter_summary"] = str(source.get("chapter_summary") or fallback_summary or "").strip()
     payload["character"] = _normalize_named_description_list(source.get("character") or source.get("characters"))
+    payload["ambiguous_character_mentions"] = _normalize_ambiguous_character_mentions(
+        source.get("ambiguous_character_mentions")
+    )
     payload["special_existence"] = _normalize_named_description_list(
         source.get("special_existence") or source.get("special_existences") or source.get("special_items")
     )
@@ -618,6 +675,12 @@ def _is_valid_chapter_summary_payload(raw_obj: Any) -> tuple[bool, str]:
     is_valid, reason = _validate_named_description_list(organizations_value, "organizations")
     if not is_valid:
         return False, reason
+
+    ambiguous_value = raw_obj.get("ambiguous_character_mentions")
+    if ambiguous_value is not None:
+        is_valid, reason = _validate_ambiguous_character_mentions(ambiguous_value)
+        if not is_valid:
+            return False, reason
 
     return True, ""
 

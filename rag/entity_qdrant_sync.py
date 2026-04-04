@@ -196,7 +196,7 @@ def _build_embedding_hash(text: str) -> str:
 def _expand_qdrant_rows(table_name: str, book_id: int | None = None) -> list[dict[str, Any]]:
     expanded: list[dict[str, Any]] = []
     for row in _load_entity_rows(table_name, book_id):
-        if table_name == "characters" and str(row.get("NEED_DELETE") or "").strip().lower() == "no":
+        if table_name == "characters" and str(row.get("NEED_DELETE") or "").strip().lower() == "yes":
             continue
         source_id = int(row.get("id") or 0)
         book_id = int(row.get("book_id") or 0)

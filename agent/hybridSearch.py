@@ -42,6 +42,7 @@ CHARACTER_COLLECTION = "characters"
 ORIGANIZATION_COLLECTION = "origanizations"
 SPECIAL_EXISTENCE_COLLECTION = "special_existences"
 WORLD_RULE_COLLECTION = "world_rules"
+HYBRID_SPARSE_RETRIEVAL_ENABLED_ENV_VAR = "HYBRID_SPARSE_RETRIEVAL_ENABLED"
 
 RRF_K = 60.0
 HYBRID_FILTER_COMPLEX_MARKERS = (
@@ -644,14 +645,11 @@ def warm_hybrid_runtime() -> None:
         _get_embedding_query_client()
     except Exception as exc:
         logger.warning("[Prewarm] embedding query client warm failed: %s", exc)
-    try:
-        _get_rerank_client()
-    except Exception as exc:
-        logger.warning("[Prewarm] rerank client warm failed: %s", exc)
-    try:
-        _get_sparse_encoder()
-    except Exception as exc:
-        logger.warning("[Prewarm] sparse encoder warm failed: %s", exc)
+    if _hybrid_sparse_retrieval_enabled():
+        try:
+            _get_sparse_encoder()
+        except Exception as exc:
+            logger.warning("[Prewarm] sparse encoder warm failed: %s", exc)
     if _get_hybrid_filter_mode() != "never":
         try:
             _get_hybrid_filter_llm()
@@ -1035,6 +1033,8 @@ def _get_rerank_client() -> RerankClient:
 
 
 def _try_import_sparse_encoder():
+    if not _hybrid_sparse_retrieval_enabled():
+        return None
     try:
         from fastembed import SparseTextEmbedding  # type: ignore
     except Exception:
@@ -1057,6 +1057,11 @@ def _try_import_sparse_encoder():
 @lru_cache(maxsize=1)
 def _get_sparse_encoder():
     return _try_import_sparse_encoder()
+
+
+def _hybrid_sparse_retrieval_enabled() -> bool:
+    raw = str(os.getenv(HYBRID_SPARSE_RETRIEVAL_ENABLED_ENV_VAR, "0") or "0").strip().lower()
+    return raw in {"1", "true", "yes", "on"}
 
 
 def _extract_sparse_vector(embedding: Any) -> tuple[list[int], list[float]]:
@@ -1214,7 +1219,7 @@ def _sparse_score_dense_candidates(
         payload = dict(hit.get("payload", {}) or {})
         candidates.append((hit.get("id"), payload, _normalize_text(payload.get(text_field, ""))))
 
-    sparse_encoder = _get_sparse_encoder()
+    sparse_encoder = _get_sparse_encoder() if _hybrid_sparse_retrieval_enabled() else None
     if sparse_encoder is not None:
         try:
             query_embedding = list(sparse_encoder.embed([_normalize_text(query)]))
@@ -1337,61 +1342,14 @@ def _rerank_candidates(
     text_field: str,
     top_n: int,
 ) -> tuple[list[dict[str, Any]], str]:
+    del query, text_field
     if not candidates:
         return [], "no_candidates"
-    rerank_disabled = str(os.getenv("RERANK_DISABLED", "1") or "1").strip().lower() in {"1", "true", "yes", "on"}
-    if rerank_disabled:
-        fallback = list(candidates)[:top_n]
-        for rank, item in enumerate(fallback, start=1):
-            item["rerank_score"] = None
-            item["rerank_rank"] = rank
-        return fallback, "rerank_disabled"
-    should_skip, skip_reason = _should_skip_rerank(query=query, candidates=candidates, top_n=top_n)
-    if should_skip:
-        fallback = list(candidates)[:top_n]
-        for rank, item in enumerate(fallback, start=1):
-            item["rerank_score"] = None
-            item["rerank_rank"] = rank
-        return fallback, skip_reason
-    rerank_client = _get_rerank_client()
-    rerank_pool_size = max(1, min(len(candidates), max(int(top_n), (len(candidates) + 1) // 2)))
-    if rerank_client.route_name() == "local_rerank":
-        rerank_pool_size = min(rerank_pool_size, max(12, int(top_n) * 2))
-    rerank_pool = list(candidates)[:rerank_pool_size]
-    docs = []
-    for item in rerank_pool:
-        text = _normalize_text(item.get("payload", {}).get(text_field, ""))
-        if rerank_client.route_name() == "local_rerank" and len(text) > 480:
-            text = text[:480]
-        docs.append(text)
-    try:
-        rerank_results = rerank_client.rerank(query, docs, top_n=min(len(docs), max(1, top_n)))
-    except Exception as exc:
-        logger.warning("[HybridSearch] rerank failed, fallback to fused order: %s", exc)
-        fallback = list(candidates)[:top_n]
-        for rank, item in enumerate(fallback, start=1):
-            item["rerank_score"] = None
-            item["rerank_rank"] = rank
-        return fallback, "fused_fallback"
-
-    ranked: list[dict[str, Any]] = []
-    for rank, rr in enumerate(rerank_results, start=1):
-        idx = int(rr.get("index"))
-        if idx < 0 or idx >= len(rerank_pool):
-            continue
-        candidate = dict(rerank_pool[idx])
-        candidate["rerank_score"] = float(rr.get("score", 0.0) or 0.0)
-        candidate["rerank_rank"] = rank
-        ranked.append(candidate)
-
-    if not ranked:
-        fallback = list(candidates)[:top_n]
-        for rank, item in enumerate(fallback, start=1):
-            item["rerank_score"] = None
-            item["rerank_rank"] = rank
-        return fallback, "fused_fallback_empty"
-
-    return ranked[:top_n], rerank_client.route_name()
+    fallback = list(candidates)[:top_n]
+    for rank, item in enumerate(fallback, start=1):
+        item["rerank_score"] = None
+        item["rerank_rank"] = rank
+    return fallback, "rerank_disabled"
 
 
 def _filter_results_with_llm(

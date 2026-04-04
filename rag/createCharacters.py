@@ -20,10 +20,11 @@ if str(ROOT_DIR) not in sys.path:
     sys.path.insert(0, str(ROOT_DIR))
 
 from agent.graph import build_llm
-from rag.entity_alias_cleanup import finalize_aliases_for_storage
 from rag.prompt import (
     CHARACTER_CANONICAL_REWRITE_PROMPT,
     CHARACTER_DIRTY_REVIEW_PROMPT,
+    CHARACTER_GROUP_FINALIZE_PROMPT,
+    CHARACTER_GENERIC_REWRITE_PROMPT,
     CHARACTER_MERGE_CANDIDATE_PROMPT,
     CHARACTER_MERGE_DECISION_PROMPT,
 )
@@ -37,11 +38,17 @@ CREATE TABLE IF NOT EXISTS `characters` (
     `name` VARCHAR(255) NOT NULL,
     `aliases` JSON NOT NULL,
     `records` JSON NOT NULL,
-    `NEED_DELETE` ENUM('yes', 'no') NOT NULL DEFAULT 'yes'
+    `NEED_DELETE` ENUM('yes', 'no') NOT NULL DEFAULT 'no'
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
 """
 CHARACTER_DIRTY_REVIEW_BATCH_SIZE = 50
 CHARACTER_DIRTY_REVIEW_MAX_CONCURRENCY = 20
+CHARACTER_GENERIC_REWRITE_MODEL = "Doubao-Seed-2.0-lite"
+CHARACTER_GENERIC_REWRITE_MAX_CONTEXT_CHAPTERS = 6
+CHARACTER_GENERIC_REWRITE_MAX_CONTENT_EXCERPT_CHARS = 240
+CHARACTER_GENERIC_REWRITE_MAX_CONCURRENCY = 25
+CHARACTER_GROUP_FINALIZE_MODEL = "Doubao-Seed-2.0-lite"
+CHARACTER_GROUP_FINALIZE_MAX_CONCURRENCY = 6
 CHARACTER_CANONICAL_REWRITE_BATCH_SIZE = 60
 CHARACTER_CANONICAL_REWRITE_MAX_CONCURRENCY = 12
 CHARACTER_MERGE_RECALL_BLOCK_MAX_ITEMS = 24
@@ -188,6 +195,24 @@ GENERIC_RELATION_OR_TITLE_TERMS = {
     "主席",
     "家主",
 }
+NICKNAME_PREFIXES = ("小", "老", "阿")
+GENERIC_DESCRIPTOR_SUFFIXES = (
+    "孩子",
+    "男孩",
+    "女孩",
+    "女人",
+    "男人",
+    "秘书",
+    "女秘书",
+    "老板",
+    "老板娘",
+    "经理",
+    "护士",
+    "研究人员",
+    "客人",
+    "大副",
+    "女王",
+)
 
 
 def _load_runtime_env() -> None:
@@ -249,23 +274,23 @@ def _ensure_characters_schema() -> None:
                 cursor.execute(
                     """
                     ALTER TABLE `characters`
-                    ADD COLUMN `NEED_DELETE` ENUM('yes', 'no') NOT NULL DEFAULT 'yes'
+                    ADD COLUMN `NEED_DELETE` ENUM('yes', 'no') NOT NULL DEFAULT 'no'
                     AFTER `records`
                     """
                 )
                 return
-            if str(row.get("COLUMN_DEFAULT") or "").strip().lower() != "yes" or str(row.get("IS_NULLABLE") or "").strip().upper() != "NO":
+            if str(row.get("COLUMN_DEFAULT") or "").strip().lower() != "no" or str(row.get("IS_NULLABLE") or "").strip().upper() != "NO":
                 cursor.execute(
                     """
                     UPDATE `characters`
-                    SET `NEED_DELETE` = 'yes'
+                    SET `NEED_DELETE` = 'no'
                     WHERE `NEED_DELETE` IS NULL
                     """
                 )
                 cursor.execute(
                     """
                     ALTER TABLE `characters`
-                    MODIFY COLUMN `NEED_DELETE` ENUM('yes', 'no') NOT NULL DEFAULT 'yes'
+                    MODIFY COLUMN `NEED_DELETE` ENUM('yes', 'no') NOT NULL DEFAULT 'no'
                     """
                 )
 
@@ -370,19 +395,40 @@ def _sanitize_character_candidates(values: list[Any]) -> list[str]:
     return cleaned
 
 
+def _is_likely_nickname(text: str) -> bool:
+    normalized = re.sub(r"\s+", "", str(text or "").strip())
+    if not normalized or _is_anchored_character_descriptor(normalized):
+        return False
+    return any(normalized.startswith(prefix) for prefix in NICKNAME_PREFIXES)
+
+
+def _looks_like_specific_person_name(text: str) -> bool:
+    normalized = re.sub(r"\s+", "", str(text or "").strip())
+    if not normalized or _is_anchored_character_descriptor(normalized) or _is_likely_nickname(normalized):
+        return False
+    if len(normalized) < 2:
+        return False
+    if any(normalized.endswith(suffix) for suffix in GENERIC_DESCRIPTOR_SUFFIXES):
+        return False
+    return True
+
+
+def _character_name_rank(text: str) -> tuple[int, int, str]:
+    candidate = str(text or "").strip()
+    if _looks_like_specific_person_name(candidate):
+        return (0, -len(candidate), _normalize_text_key(candidate))
+    if _is_anchored_character_descriptor(candidate):
+        return (1, -len(candidate), _normalize_text_key(candidate))
+    if _is_likely_nickname(candidate):
+        return (3, -len(candidate), _normalize_text_key(candidate))
+    return (2, -len(candidate), _normalize_text_key(candidate))
+
+
 def _pick_preferred_character_name(name: str, aliases: list[str]) -> str:
     raw_name = str(name or "").strip()
-    sanitized_name = _sanitize_character_candidate(raw_name)
-    if sanitized_name and not _is_anchored_character_descriptor(sanitized_name):
-        return sanitized_name
     candidates = _sanitize_character_candidates([raw_name, *aliases])
-    anchored = [candidate for candidate in candidates if _is_anchored_character_descriptor(candidate)]
-    if anchored:
-        return sorted(anchored, key=lambda item: (len(item), _normalize_text_key(item)))[0]
-    if sanitized_name:
-        return sanitized_name
     if candidates:
-        return candidates[0]
+        return sorted(candidates, key=_character_name_rank)[0]
     return raw_name
 
 
@@ -490,6 +536,156 @@ def _normalize_character_entry(item: Any) -> dict[str, Any] | None:
     }
 
 
+def _extract_content_excerpt(content: Any, keyword: str, limit: int = CHARACTER_GENERIC_REWRITE_MAX_CONTENT_EXCERPT_CHARS) -> str:
+    text = str(content or "").strip()
+    needle = str(keyword or "").strip()
+    if not text:
+        return ""
+    if not needle:
+        return text[:limit]
+    index = text.find(needle)
+    if index < 0:
+        return text[:limit]
+    half = max(20, limit // 2)
+    start = max(0, index - half)
+    end = min(len(text), index + len(needle) + half)
+    return text[start:end].strip()
+
+
+def _normalize_ambiguous_character_mentions(value: Any) -> list[dict[str, str]]:
+    if not isinstance(value, list):
+        return []
+    normalized: list[dict[str, str]] = []
+    seen: set[tuple[str, str, str]] = set()
+    for item in value:
+        if not isinstance(item, dict):
+            continue
+        surface_name = str(
+            item.get("surface_name")
+            or item.get("name")
+            or item.get("title")
+            or item.get("entity")
+            or item.get("item")
+            or item.get("label")
+            or ""
+        ).strip()
+        description = str(
+            item.get("description")
+            or item.get("summary")
+            or item.get("info")
+            or item.get("content")
+            or item.get("detail")
+            or item.get("note")
+            or item.get("text")
+            or ""
+        ).strip()
+        evidence_excerpt = str(
+            item.get("evidence_excerpt")
+            or item.get("excerpt")
+            or item.get("evidence")
+            or item.get("quote")
+            or ""
+        ).strip()
+        signature = (surface_name, description, evidence_excerpt)
+        if not any(signature) or signature in seen:
+            continue
+        normalized.append(
+            {
+                "surface_name": surface_name,
+                "description": description,
+                "evidence_excerpt": evidence_excerpt,
+            }
+        )
+        seen.add(signature)
+    return normalized
+
+
+def _load_chapter_contexts(book_id: int, chapter_indexes: list[int]) -> dict[int, dict[str, Any]]:
+    normalized_indexes = sorted({int(item) for item in chapter_indexes if int(item) > 0})
+    if not normalized_indexes:
+        return {}
+    placeholders = ", ".join(["%s"] * len(normalized_indexes))
+    with _connect() as conn:
+        with conn.cursor() as cursor:
+            cursor.execute(
+                f"""
+                SELECT chapter_index, chapter_summary, raw_summary_json, content
+                FROM book_chapters
+                WHERE book_id = %s AND chapter_index IN ({placeholders})
+                ORDER BY chapter_index ASC
+                """,
+                [int(book_id), *normalized_indexes],
+            )
+            rows = list(cursor.fetchall() or [])
+
+    contexts: dict[int, dict[str, Any]] = {}
+    for row in rows:
+        raw_summary = row.get("raw_summary_json")
+        payload = raw_summary if isinstance(raw_summary, dict) else _extract_json_object(str(raw_summary or ""))
+        contexts[int(row.get("chapter_index") or 0)] = {
+            "chapter_summary": str(row.get("chapter_summary") or "").strip(),
+            "known_characters": _normalize_named_description_list((payload or {}).get("character")),
+            "ambiguous_character_mentions": _normalize_ambiguous_character_mentions((payload or {}).get("ambiguous_character_mentions")),
+            "content_excerpt": str(row.get("content") or ""),
+        }
+    return contexts
+
+
+def _build_generic_rewrite_context(item: dict[str, Any], chapter_contexts: dict[int, dict[str, Any]]) -> list[dict[str, Any]]:
+    contexts: list[dict[str, Any]] = []
+    chapter_indexes = [int(record[0]) for record in _normalize_records(item.get("records")) if int(record[0]) > 0]
+    seen: set[int] = set()
+    for chapter_index in chapter_indexes[:CHARACTER_GENERIC_REWRITE_MAX_CONTEXT_CHAPTERS]:
+        if chapter_index in seen:
+            continue
+        seen.add(chapter_index)
+        chapter_row = chapter_contexts.get(chapter_index, {})
+        record_descriptions = [
+            str(record[1] or "").strip()
+            for record in _normalize_records(item.get("records"))
+            if int(record[0]) == chapter_index and str(record[1] or "").strip()
+        ]
+        known_characters = [entry.get("name") for entry in chapter_row.get("known_characters", []) if str(entry.get("name") or "").strip()]
+        contexts.append(
+            {
+                "chapter_index": chapter_index,
+                "record_descriptions": record_descriptions,
+                "chapter_summary": str(chapter_row.get("chapter_summary") or "").strip(),
+                "known_characters": known_characters,
+                "ambiguous_character_mentions": chapter_row.get("ambiguous_character_mentions", []),
+                "content_excerpt": _extract_content_excerpt(chapter_row.get("content_excerpt"), str(item.get("name") or "").strip()),
+            }
+        )
+    return contexts
+
+
+def _apply_generic_character_rewrite_result(original_item: dict[str, Any], rewritten_item: dict[str, Any]) -> dict[str, Any] | None:
+    action = str(rewritten_item.get("action") or "").strip().lower()
+    if action != "rewrite":
+        return None
+
+    raw_name = str(rewritten_item.get("canonical_name") or "").strip()
+    canonical_name = _sanitize_character_candidate(raw_name)
+    if not canonical_name:
+        return None
+
+    selected_aliases = _sanitize_character_candidates(
+        [
+            canonical_name,
+            *[str(alias or "").strip() for alias in rewritten_item.get("aliases") or []],
+        ]
+    )
+    aliases = [alias for alias in selected_aliases if not _is_unanchored_generic_character_name(alias)]
+    if canonical_name not in aliases:
+        aliases.insert(0, canonical_name)
+
+    return {
+        **original_item,
+        "name": canonical_name,
+        "aliases": aliases or [canonical_name],
+    }
+
+
 def _extract_json_array(text: str) -> list[dict[str, Any]]:
     payload = str(text or "").strip()
     if not payload:
@@ -509,6 +705,10 @@ def _extract_json_array(text: str) -> list[dict[str, Any]]:
     if not isinstance(parsed, list):
         return []
     return [item for item in parsed if isinstance(item, dict)]
+
+
+def _requires_generic_character_rewrite(item: dict[str, Any]) -> bool:
+    return _is_unanchored_generic_character_name(str(item.get("name") or "").strip())
 
 
 def _chunk_items(items: list[dict[str, Any]], size: int) -> list[list[dict[str, Any]]]:
@@ -536,6 +736,68 @@ async def _invoke_llm_text(llm_client: Any, prompt: str) -> str:
                     parts.append(text.strip())
         return "\n".join(part for part in parts if part)
     return str(content).strip()
+
+
+async def _rewrite_single_generic_character_item(
+    llm_client: Any,
+    semaphore: asyncio.Semaphore,
+    item: dict[str, Any],
+    chapter_contexts: dict[int, dict[str, Any]],
+) -> dict[str, Any] | None:
+    prompt_payload = {
+        "name": str(item.get("name") or "").strip(),
+        "aliases": [str(alias or "").strip() for alias in item.get("aliases") or [] if str(alias or "").strip()],
+        "records": _normalize_records(item.get("records")),
+        "chapter_contexts": _build_generic_rewrite_context(item, chapter_contexts),
+    }
+    prompt = CHARACTER_GENERIC_REWRITE_PROMPT.format(
+        item_json=json.dumps(prompt_payload, ensure_ascii=False, indent=2)
+    )
+    async with semaphore:
+        raw_text = await _invoke_llm_text(llm_client, prompt)
+    return _extract_json_object(raw_text)
+
+
+async def _rewrite_generic_character_items_async(
+    llm_client: Any,
+    items: list[dict[str, Any]],
+    chapter_contexts: dict[int, dict[str, Any]],
+) -> list[dict[str, Any]]:
+    semaphore = asyncio.Semaphore(CHARACTER_GENERIC_REWRITE_MAX_CONCURRENCY)
+
+    async def _run_single(index: int, item: dict[str, Any]) -> tuple[int, dict[str, Any] | None]:
+        if not _requires_generic_character_rewrite(item):
+            return index, item
+        try:
+            rewritten = await _rewrite_single_generic_character_item(llm_client, semaphore, item, chapter_contexts)
+        except Exception as exc:
+            logger.warning("[characters] generic rewrite failed for %s: %s", item.get("name"), exc)
+            rewritten = {}
+        return index, _apply_generic_character_rewrite_result(item, rewritten or {})
+
+    tasks = [asyncio.create_task(_run_single(index, item)) for index, item in enumerate(items)]
+    rewritten_by_index: dict[int, dict[str, Any]] = {}
+    for task in asyncio.as_completed(tasks):
+        index, row = await task
+        if row is not None:
+            rewritten_by_index[index] = row
+    return [rewritten_by_index[index] for index in sorted(rewritten_by_index)]
+
+
+def _rewrite_generic_character_items(book_id: int, items: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    if not items:
+        return []
+    chapter_indexes: list[int] = []
+    for item in items:
+        if not _requires_generic_character_rewrite(item):
+            continue
+        chapter_indexes.extend(int(record[0]) for record in _normalize_records(item.get("records")) if int(record[0]) > 0)
+    if not chapter_indexes:
+        return items
+
+    chapter_contexts = _load_chapter_contexts(book_id, chapter_indexes)
+    llm_client = build_llm(CHARACTER_GENERIC_REWRITE_MODEL)
+    return asyncio.run(_rewrite_generic_character_items_async(llm_client, items, chapter_contexts))
 
 
 async def _review_single_character_batch(
@@ -1016,9 +1278,7 @@ def _pick_group_canonical_name(group: list[dict[str, Any]]) -> str:
             counts.items(),
             key=lambda row: (
                 -int(row[1]),
-                1 if _is_anchored_character_descriptor(row[0]) else 0,
-                len(row[0]),
-                _normalize_text_key(row[0]),
+                *_character_name_rank(row[0]),
             ),
         )
         return ranked[0][0]
@@ -1027,6 +1287,95 @@ def _pick_group_canonical_name(group: list[dict[str, Any]]) -> str:
         str(first_item.get("name") or "").strip(),
         [str(alias or "").strip() for alias in first_item.get("aliases") or []],
     )
+
+
+def _merge_group_records(group: list[dict[str, Any]]) -> list[list[Any]]:
+    records: list[list[Any]] = []
+    seen_records: set[tuple[Any, Any]] = set()
+    for item in group:
+        for record in _normalize_records(item.get("records")):
+            signature = (record[0], record[1])
+            if signature in seen_records:
+                continue
+            records.append(record)
+            seen_records.add(signature)
+    def _record_sort_key(row: list[Any]) -> tuple[int, int | str, str]:
+        chapter = row[0] if row else ""
+        if isinstance(chapter, int):
+            return (0, chapter, str(row[1] if len(row) > 1 else ""))
+        try:
+            return (0, int(chapter), str(row[1] if len(row) > 1 else ""))
+        except (TypeError, ValueError):
+            return (1, str(chapter), str(row[1] if len(row) > 1 else ""))
+
+    records.sort(key=_record_sort_key)
+    return records
+
+
+def _available_group_name_candidates(group: list[dict[str, Any]]) -> list[str]:
+    return _dedupe_texts(
+        [
+            item.get("name")
+            for item in group
+        ]
+        + [
+            alias
+            for item in group
+            for alias in list(item.get("aliases") or [])
+        ]
+    )
+
+
+def _build_group_candidate_stats(group: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    stats_by_key: dict[str, dict[str, Any]] = {}
+    for item in group:
+        item_id = str(item.get("_item_id") or "").strip()
+        for candidate in [str(item.get("name") or "").strip(), *[str(alias or "").strip() for alias in item.get("aliases") or []]]:
+            key = _normalize_text_key(candidate)
+            if not key:
+                continue
+            row = stats_by_key.setdefault(
+                key,
+                {
+                    "candidate": candidate,
+                    "occurrences": 0,
+                    "as_name_count": 0,
+                    "as_alias_count": 0,
+                    "item_ids": [],
+                },
+            )
+            row["occurrences"] += 1
+            if candidate == str(item.get("name") or "").strip():
+                row["as_name_count"] += 1
+            else:
+                row["as_alias_count"] += 1
+            if item_id and item_id not in row["item_ids"]:
+                row["item_ids"].append(item_id)
+    return sorted(
+        stats_by_key.values(),
+        key=lambda row: (-int(row.get("occurrences") or 0), _normalize_text_key(row.get("candidate") or "")),
+    )
+
+
+def _build_group_finalize_payload(group: list[dict[str, Any]]) -> dict[str, Any]:
+    prompt_items: list[dict[str, Any]] = []
+    for item in group:
+        records = _normalize_records(item.get("records"))
+        chapter_indexes = [int(record[0]) for record in records if isinstance(record[0], int)]
+        chapter_span = [min(chapter_indexes), max(chapter_indexes)] if chapter_indexes else []
+        prompt_items.append(
+            {
+                "item_id": str(item.get("_item_id") or ""),
+                "name": str(item.get("name") or "").strip(),
+                "aliases": [str(alias or "").strip() for alias in item.get("aliases") or [] if str(alias or "").strip()],
+                "record_count": len(records),
+                "chapter_span": chapter_span,
+            }
+        )
+    return {
+        "items": prompt_items,
+        "candidate_stats": _build_group_candidate_stats(group),
+    }
 
 
 def _merge_item_group(group: list[dict[str, Any]]) -> dict[str, Any]:
@@ -1042,21 +1391,78 @@ def _merge_item_group(group: list[dict[str, Any]]) -> dict[str, Any]:
             ],
         ]
     )
-    records: list[list[Any]] = []
-    seen_records: set[tuple[Any, Any]] = set()
-    for item in group:
-        for record in _normalize_records(item.get("records")):
-            signature = (record[0], record[1])
-            if signature in seen_records:
-                continue
-            records.append(record)
-            seen_records.add(signature)
-    records.sort(key=lambda row: (str(row[0]), str(row[1])))
+    records = _merge_group_records(group)
     return {
         "name": canonical_name,
         "aliases": aliases,
         "records": records,
     }
+
+
+def _apply_group_finalize_result(group: list[dict[str, Any]], result: dict[str, Any]) -> dict[str, Any]:
+    allowed_candidates = _available_group_name_candidates(group)
+    canonical_name = _resolve_candidate_from_allowed(result.get("canonical_name"), allowed_candidates)
+    if not canonical_name:
+        return _merge_item_group(group)
+
+    aliases = _dedupe_texts(
+        [
+            _resolve_candidate_from_allowed(alias, allowed_candidates)
+            for alias in list(result.get("aliases") or [])
+        ]
+    )
+    aliases = [
+        alias
+        for alias in aliases
+        if _normalize_text_key(alias) != _normalize_text_key(canonical_name)
+    ]
+    return {
+        "name": canonical_name,
+        "aliases": aliases,
+        "records": _merge_group_records(group),
+    }
+
+
+async def _finalize_single_item_group(
+    llm_client: Any,
+    semaphore: asyncio.Semaphore,
+    group: list[dict[str, Any]],
+) -> dict[str, Any]:
+    prompt = CHARACTER_GROUP_FINALIZE_PROMPT.format(
+        group_json=json.dumps(_build_group_finalize_payload(group), ensure_ascii=False, indent=2)
+    )
+    async with semaphore:
+        raw_text = await _invoke_llm_text(llm_client, prompt)
+    return _extract_json_object(raw_text) or {}
+
+
+async def _finalize_item_groups_async(
+    llm_client: Any,
+    groups: list[list[dict[str, Any]]],
+) -> list[dict[str, Any]]:
+    semaphore = asyncio.Semaphore(CHARACTER_GROUP_FINALIZE_MAX_CONCURRENCY)
+
+    async def _run_single(index: int, group: list[dict[str, Any]]) -> tuple[int, dict[str, Any]]:
+        try:
+            payload = await _finalize_single_item_group(llm_client, semaphore, group)
+        except Exception as exc:
+            logger.warning("[characters] group finalize failed for %s: %s", index, exc)
+            payload = {}
+        return index, _apply_group_finalize_result(group, payload)
+
+    tasks = [asyncio.create_task(_run_single(index, group)) for index, group in enumerate(groups)]
+    finalized_by_index: dict[int, dict[str, Any]] = {}
+    for task in asyncio.as_completed(tasks):
+        index, item = await task
+        finalized_by_index[index] = item
+    return [finalized_by_index[index] for index in sorted(finalized_by_index)]
+
+
+def _finalize_item_groups(groups: list[list[dict[str, Any]]]) -> list[dict[str, Any]]:
+    if not groups:
+        return []
+    llm_client = build_llm(CHARACTER_GROUP_FINALIZE_MODEL)
+    return asyncio.run(_finalize_item_groups_async(llm_client, groups))
 
 
 def _run_character_rewrite_and_merge(items: list[dict[str, Any]]) -> list[dict[str, Any]]:
@@ -1068,7 +1474,7 @@ def _run_character_rewrite_and_merge(items: list[dict[str, Any]]) -> list[dict[s
     candidate_pairs = asyncio.run(_recall_merge_candidate_pairs(llm_client, rewritten_items))
     decisions = asyncio.run(_decide_merge_pairs(llm_client, rewritten_items, candidate_pairs))
     groups = _group_items_for_merge(rewritten_items, decisions)
-    return [_merge_item_group(group) for group in groups]
+    return _finalize_item_groups(groups)
 
 
 def _merge_alias_lists(*alias_lists: list[str]) -> list[str]:
@@ -1125,17 +1531,51 @@ def _merge_character_items(items: list[dict[str, Any]]) -> list[dict[str, Any]]:
 def _finalize_character_aliases(items: list[dict[str, Any]]) -> list[dict[str, Any]]:
     finalized: list[dict[str, Any]] = []
     for item in items:
-        aliases = finalize_aliases_for_storage(item["name"], item["aliases"])
-        if not aliases:
+        canonical_name = str(item.get("name") or "").strip()
+        if not canonical_name:
             continue
+        aliases = [
+            alias
+            for alias in _dedupe_texts([str(alias or "").strip() for alias in item.get("aliases") or []])
+            if _normalize_text_key(alias) != _normalize_text_key(canonical_name)
+        ]
         finalized.append(
             {
-                "name": item["name"],
+                "name": canonical_name,
                 "aliases": aliases,
-                "records": item["records"],
+                "records": _normalize_records(item.get("records")),
             }
         )
     return finalized
+
+
+def _merge_same_canonical_character_items(items: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    merged_by_name: dict[str, dict[str, Any]] = {}
+    order: list[str] = []
+    for item in items:
+        canonical_name = str(item.get("name") or "").strip()
+        if not canonical_name:
+            continue
+        key = _normalize_text_key(canonical_name)
+        if not key:
+            continue
+        existing = merged_by_name.get(key)
+        normalized_aliases = [
+            alias
+            for alias in _dedupe_texts([str(alias or "").strip() for alias in item.get("aliases") or []])
+            if _normalize_text_key(alias) != key
+        ]
+        if existing is None:
+            merged_by_name[key] = {
+                "name": canonical_name,
+                "aliases": normalized_aliases,
+                "records": _normalize_records(item.get("records")),
+            }
+            order.append(key)
+            continue
+        existing["aliases"] = _merge_alias_lists(existing["aliases"], normalized_aliases)
+        existing["records"] = _merge_group_records([existing, item])
+    return [merged_by_name[key] for key in order]
 
 
 def _load_plot_character_items(book_id: int | None = None) -> dict[int, list[dict[str, Any]]]:
@@ -1190,8 +1630,9 @@ def _serialize_character_item(item: dict[str, Any]) -> str:
 
 
 def _build_character_item_key(item: dict[str, Any]) -> str:
+    name = str(item.get("name") or "").strip()
     aliases = sorted({str(alias or "").strip() for alias in item.get("aliases") or [] if str(alias or "").strip()})
-    payload = json.dumps(aliases, ensure_ascii=False, separators=(",", ":"))
+    payload = json.dumps({"name": name, "aliases": aliases}, ensure_ascii=False, separators=(",", ":"))
     return _hash_text(payload)
 
 
@@ -1217,7 +1658,7 @@ def _load_existing_character_rows(book_id: int) -> list[dict[str, Any]]:
                 "name": str(row.get("name") or "").strip(),
                 "aliases": _parse_json_list(row.get("aliases")),
                 "records": _parse_json_list(row.get("records")),
-                "NEED_DELETE": str(row.get("NEED_DELETE") or "").strip().lower() or "yes",
+                "NEED_DELETE": str(row.get("NEED_DELETE") or "").strip().lower() or "no",
             }
         )
     return [row for row in normalized_rows if row["id"] > 0]
@@ -1249,7 +1690,7 @@ def _sync_book_characters(cursor: Any, book_id: int, items: list[dict[str, Any]]
                     item["name"],
                     json.dumps(item["aliases"], ensure_ascii=False),
                     json.dumps(item["records"], ensure_ascii=False),
-                    "yes",
+                    "no",
                 ),
             )
             row_id = int(cursor.lastrowid or 0)
@@ -1277,7 +1718,7 @@ def _sync_book_characters(cursor: Any, book_id: int, items: list[dict[str, Any]]
                 item["name"],
                 json.dumps(item["aliases"], ensure_ascii=False),
                 json.dumps(item["records"], ensure_ascii=False),
-                "yes",
+                "no",
                 int(existing_row["id"]),
             ),
         )
@@ -1309,8 +1750,9 @@ def rebuild_characters_table(book_id: int | None = None) -> dict[str, int]:
     raw_items_by_book = _load_plot_character_items(book_id)
     items_by_book: dict[int, list[dict[str, Any]]] = {}
     for current_book_id, items in raw_items_by_book.items():
-        rewritten_items = _run_character_rewrite_and_merge(items)
-        finalized_items = _finalize_character_aliases(rewritten_items)
+        generic_rewritten_items = _rewrite_generic_character_items(current_book_id, items)
+        rewritten_items = _run_character_rewrite_and_merge(generic_rewritten_items)
+        finalized_items = _merge_same_canonical_character_items(_finalize_character_aliases(rewritten_items))
         if finalized_items:
             items_by_book[current_book_id] = finalized_items
     total_rows = 0

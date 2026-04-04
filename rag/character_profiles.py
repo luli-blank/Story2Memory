@@ -1052,7 +1052,7 @@ def _chunk_packets_by_volume(packets: list[dict[str, Any]], *, max_chapters: int
 
 
 def _list_valid_characters(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
-    return [row for row in rows if row["need_delete"] != "no" and row["id"] > 0 and row["name"]]
+    return [row for row in rows if row["need_delete"] != "yes" and row["id"] > 0 and row["name"]]
 
 
 def list_book_character_cards(book_id: int, limit: int | None = 10) -> list[dict[str, Any]]:

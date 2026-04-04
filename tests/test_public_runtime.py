@@ -92,6 +92,37 @@ def test_load_books_schedules_agent_runtime_prewarm_when_enabled(monkeypatch):
     assert calls == [[7]]
 
 
+def test_load_books_generates_book_specific_cover_when_managed_cover_file_is_missing(monkeypatch):
+    import rag.uploadBook as upload_book
+    import reflex_app.state as state_module
+
+    monkeypatch.setattr(upload_book, "recover_interrupted_book_statuses", lambda: 0)
+    monkeypatch.setattr(
+        upload_book,
+        "list_books",
+        lambda: [
+            {
+                "id": 7,
+                "title": "Demo",
+                "author": "作者",
+                "cover_url": "/covers/demo.jpg",
+                "total_chapters": 1,
+                "total_words": 10,
+                "status": "completed",
+            }
+        ],
+    )
+    monkeypatch.setattr(state_module, "_BOOK_STATUS_RECOVERY_DONE", False)
+    monkeypatch.setattr(state_module, "_managed_cover_exists", lambda raw_cover: False)
+
+    state = NovelState()
+    state.load_books()
+
+    assert len(state.uploaded_books) == 1
+    assert state.uploaded_books[0].cover.startswith("data:image/svg+xml;utf8,")
+    assert "Demo" in state.uploaded_books[0].cover
+
+
 def test_mysql_chat_store_append_message_uses_auto_increment(monkeypatch):
     class FakeCursor:
         def __init__(self):

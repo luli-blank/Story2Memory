@@ -204,10 +204,8 @@ def _is_rate_limit_error(exc: Exception) -> bool:
 
 
 def _compute_retry_delay(attempt: int, base_delay: float, max_delay: float, jitter: float) -> float:
-    delay = min(max_delay, base_delay * (2 ** max(0, int(attempt))))
-    if jitter > 0:
-        delay += random.uniform(0.0, jitter)
-    return delay
+    del attempt, base_delay, max_delay, jitter
+    return random.uniform(0.0, 15.0)
 
 
 def _env_flag_enabled(name: str, default: bool = False) -> bool:

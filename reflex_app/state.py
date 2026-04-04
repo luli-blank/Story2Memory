@@ -9,6 +9,7 @@ import sys
 import time
 from pathlib import Path
 from typing import Any
+from urllib.parse import quote
 
 import pydantic
 import plotly.graph_objects as go
@@ -34,6 +35,7 @@ RELATION_GRAPH_RELAXATION_PASSES = 28
 logger = logging.getLogger(__name__)
 _BOOK_STATUS_RECOVERY_DONE = False
 _WEB_ENV_PATH = Path(__file__).resolve().parents[1] / ".web" / "env.json"
+_PICTURE_DIR = Path(__file__).resolve().parents[1] / "data" / "picture"
 
 
 def _setup_terminal_logging() -> None:
@@ -90,6 +92,45 @@ def _resolve_cover_url(raw_cover: str) -> str:
         if backend_origin:
             return f"{backend_origin}{cover}"
     return cover
+
+
+def _managed_cover_exists(raw_cover: str) -> bool:
+    cover = str(raw_cover or "").strip()
+    if not cover.startswith("/covers/"):
+        return False
+    candidate = (_PICTURE_DIR / cover.split("/covers/", 1)[1]).resolve()
+    picture_root = _PICTURE_DIR.resolve()
+    return candidate.is_file() and (candidate == picture_root or picture_root in candidate.parents)
+
+
+def _book_cover_fallback(title: str) -> str:
+    safe_title = html.escape(str(title or "").strip() or "Untitled")
+    short_title = safe_title if len(safe_title) <= 18 else f"{safe_title[:17]}…"
+    svg = f"""
+<svg xmlns="http://www.w3.org/2000/svg" width="300" height="420" viewBox="0 0 300 420">
+  <defs>
+    <linearGradient id="bg" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#0f172a" />
+      <stop offset="100%" stop-color="#1d4ed8" />
+    </linearGradient>
+  </defs>
+  <rect width="300" height="420" rx="24" fill="url(#bg)" />
+  <rect x="22" y="22" width="256" height="376" rx="18" fill="none" stroke="rgba(255,255,255,0.24)" />
+  <text x="36" y="88" fill="#93c5fd" font-size="18" font-family="Arial, sans-serif">Story2Memory</text>
+  <text x="36" y="178" fill="#f8fafc" font-size="30" font-weight="700" font-family="Arial, sans-serif">{short_title}</text>
+  <text x="36" y="356" fill="#bfdbfe" font-size="16" font-family="Arial, sans-serif">Cover missing, restored locally</text>
+</svg>
+""".strip()
+    return f"data:image/svg+xml;utf8,{quote(svg)}"
+
+
+def _resolve_book_cover(raw_cover: str, *, title: str) -> str:
+    cover = str(raw_cover or "").strip()
+    if not cover:
+        return _book_cover_fallback(title)
+    if cover.startswith("/covers/") and not _managed_cover_exists(cover):
+        return _book_cover_fallback(title)
+    return _resolve_cover_url(cover)
 
 
 class Book(pydantic.BaseModel):
@@ -1496,7 +1537,10 @@ class NovelState(rx.State):
                         f"{status_map.get(str(row.get('status', 'pending')), '待处理')} · "
                         f"{int(row.get('total_chapters') or 0)}章"
                     ),
-                    cover=_resolve_cover_url(str(row.get("cover_url") or "")),
+                    cover=_resolve_book_cover(
+                        str(row.get("cover_url") or ""),
+                        title=str(row.get("title", "")).strip(),
+                    ),
                     status=str(row.get("status") or "pending"),
                 )
                 for row in rows
@@ -1843,7 +1887,10 @@ class NovelState(rx.State):
                     ),
                     timeout=1800,
                 )
-                packet = agent.get_last_search_packet(active_title)
+                packet = agent.get_last_search_packet(
+                    active_title,
+                    book_id=int(self.current_book_id or 0),
+                )
                 self.confirmed_evidence = self._normalize_confirmed_evidence(packet)
             logger.info(
                 "[ChatFlow][%s] agent.reply finished. elapsed_sec=%.3f reply_chars=%d",

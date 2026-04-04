@@ -407,8 +407,11 @@ class ChatAgent:
         )
         return tool_text, tool_elapsed_sec, tool_name
 
-    def get_last_search_packet(self, novel_title: str = "") -> dict[str, object]:
-        session_id, _, _ = self._resolve_session_info(novel_title)
+    def get_last_search_packet(self, novel_title: str = "", *, book_id: int = 0) -> dict[str, object]:
+        session_id, _, _ = self._resolve_session_info(
+            novel_title=novel_title,
+            book_id=book_id,
+        )
         return dict(self._last_search_packet_by_session.get(session_id, {}) or {})
 
     @staticmethod

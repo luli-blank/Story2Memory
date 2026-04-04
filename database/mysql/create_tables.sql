@@ -110,7 +110,7 @@ CREATE TABLE IF NOT EXISTS `characters` (
     `name` VARCHAR(255) NOT NULL,
     `aliases` JSON NOT NULL,
     `records` JSON NOT NULL,
-    `NEED_DELETE` ENUM('yes', 'no') NOT NULL DEFAULT 'yes'
+    `NEED_DELETE` ENUM('yes', 'no') NOT NULL DEFAULT 'no'
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
 
 CREATE TABLE IF NOT EXISTS `special_existences` (
