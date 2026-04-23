@@ -7,11 +7,13 @@ from rag.character_profiles import _list_valid_characters
 from rag.createCharacters import (
     _apply_generic_character_rewrite_result,
     _build_character_item_key,
+    _build_second_pass_candidate_groups,
     _finalize_character_aliases,
     _finalize_item_groups,
     _merge_group_records,
     _merge_same_canonical_character_items,
     _pick_preferred_character_name,
+    _run_character_rewrite_and_merge,
 )
 
 
@@ -205,3 +207,97 @@ def test_merge_group_records_sorts_records_by_numeric_chapter_order():
         [36, "chapter 36"],
         [100, "chapter 100"],
     ]
+
+
+def test_run_character_rewrite_and_merge_uses_single_asyncio_run(monkeypatch):
+    class _FakeLLM:
+        pass
+
+    original_asyncio_run = __import__("asyncio").run
+    run_calls: list[str] = []
+
+    def _counting_run(coro):
+        run_calls.append(getattr(coro, "__name__", coro.__class__.__name__))
+        return original_asyncio_run(coro)
+
+    async def _fake_rewrite_character_batches(llm_client, items):
+        assert isinstance(llm_client, _FakeLLM)
+        return items
+
+    async def _fake_build_candidate_merge_groups(llm_client, book_id, items):
+        assert isinstance(llm_client, _FakeLLM)
+        assert book_id == 6
+        return [items]
+
+    async def _fake_finalize_item_groups_async(llm_client, groups):
+        assert isinstance(llm_client, _FakeLLM)
+        return [
+            {
+                "name": "罗杰·艾克罗伊德",
+                "aliases": ["艾克罗伊德先生"],
+                "records": [[1, "record"]],
+            }
+        ]
+
+    monkeypatch.setattr("rag.createCharacters.build_llm", lambda model=None: _FakeLLM())
+    monkeypatch.setattr("rag.createCharacters.asyncio.run", _counting_run)
+    monkeypatch.setattr("rag.createCharacters._rewrite_character_batches", _fake_rewrite_character_batches)
+    monkeypatch.setattr("rag.createCharacters._build_candidate_merge_groups", _fake_build_candidate_merge_groups)
+    monkeypatch.setattr("rag.createCharacters._finalize_item_groups_async", _fake_finalize_item_groups_async)
+
+    result = _run_character_rewrite_and_merge(
+        6,
+        [
+            {
+                "_item_id": "character-item-1",
+                "name": "罗杰·艾克罗伊德",
+                "aliases": ["艾克罗伊德先生"],
+                "records": [[1, "record"]],
+            }
+        ],
+    )
+
+    assert result == [
+        {
+            "name": "罗杰·艾克罗伊德",
+            "aliases": ["艾克罗伊德先生"],
+            "records": [[1, "record"]],
+        }
+    ]
+    assert len(run_calls) == 1
+
+
+def test_build_second_pass_candidate_groups_buckets_rename_and_title_residuals():
+    groups = _build_second_pass_candidate_groups(
+        [
+            {
+                "_item_id": "item-1",
+                "name": "雷娜塔·叶夫根尼·契切林",
+                "aliases": [],
+                "records": [[222, "她被零号宣布买下并改名为零，在风雪中回应。"]],
+            },
+            {
+                "_item_id": "item-2",
+                "name": "零",
+                "aliases": [],
+                "records": [[39, "她自称Zero。"]],
+            },
+            {
+                "_item_id": "item-3",
+                "name": "马突尔",
+                "aliases": [],
+                "records": [[230, "装备部研究员，提出方案A。"]],
+            },
+            {
+                "_item_id": "item-4",
+                "name": "马突尔研究员",
+                "aliases": [],
+                "records": [[529, "观测到高温反应。"]],
+            },
+        ]
+    )
+
+    signatures = {tuple(group) for group in groups}
+
+    assert ("item-1", "item-2") in signatures
+    assert ("item-3", "item-4") in signatures

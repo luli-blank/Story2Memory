@@ -28,6 +28,7 @@ from core.public_runtime import (
 DEFAULT_COVER_URL = "https://placehold.co/150x200"
 MAX_CHAT_MESSAGES = 60
 CHARACTER_ARCHIVE_PAGE_SIZE = 10
+CHARACTER_ARCHIVE_RECORD_THRESHOLD_OPTIONS = (1, 5, 10, 20, 50, 100)
 RELATION_GRAPH_EDGE_SAMPLE_POINTS = 21
 RELATION_GRAPH_EDGE_HIT_SIZE = 14
 RELATION_GRAPH_VIEWBOX_WIDTH = 1000.0
@@ -418,6 +419,7 @@ class NovelState(rx.State):
     delete_book_target_title: str = ""
     character_archive_items: list[CharacterArchiveCard] = []
     character_archive_page: int = 1
+    character_archive_record_threshold: int = 20
     current_character_card: CharacterArchiveCard = CharacterArchiveCard()
     current_character_profile: CharacterProfileView = CharacterProfileView()
     current_character_relations: list[CharacterRelationView] = []
@@ -494,20 +496,33 @@ class NovelState(rx.State):
         return self.is_character_generating or self.is_character_roleplay_generating or self.current_character_id <= 0
 
     @rx.var
+    def character_archive_filtered_items(self) -> list[CharacterArchiveCard]:
+        threshold = int(self.character_archive_record_threshold or 20)
+        return [
+            item
+            for item in self.character_archive_items
+            if int(item.record_count or 0) > threshold
+        ]
+
+    @rx.var
+    def character_archive_has_visible_items(self) -> bool:
+        return len(self.character_archive_filtered_items) > 0
+
+    @rx.var
     def character_archive_total_pages(self) -> int:
-        total_items = len(self.character_archive_items)
+        total_items = len(self.character_archive_filtered_items)
         if total_items <= 0:
             return 1
         return max(1, (total_items + CHARACTER_ARCHIVE_PAGE_SIZE - 1) // CHARACTER_ARCHIVE_PAGE_SIZE)
 
     @rx.var
     def character_archive_page_items(self) -> list[CharacterArchiveCard]:
-        if not self.character_archive_items:
+        if not self.character_archive_filtered_items:
             return []
         current_page = max(1, min(int(self.character_archive_page or 1), int(self.character_archive_total_pages or 1)))
         start = (current_page - 1) * CHARACTER_ARCHIVE_PAGE_SIZE
         end = start + CHARACTER_ARCHIVE_PAGE_SIZE
-        return self.character_archive_items[start:end]
+        return self.character_archive_filtered_items[start:end]
 
     @rx.var
     def character_archive_page_label(self) -> str:
@@ -661,6 +676,16 @@ class NovelState(rx.State):
     def set_setup_prewarm_enabled(self, value: bool):
         self.setup_prewarm_enabled = bool(value)
 
+    def set_character_archive_record_threshold(self, value: str):
+        try:
+            threshold = int(str(value or "").strip())
+        except ValueError:
+            threshold = 20
+        if threshold not in CHARACTER_ARCHIVE_RECORD_THRESHOLD_OPTIONS:
+            threshold = 20
+        self.character_archive_record_threshold = threshold
+        self.character_archive_page = 1
+
     def open_book(self, book_id: int, title: str):
         self.current_book_id = int(book_id or 0)
         self.current_novel = title
@@ -671,6 +696,7 @@ class NovelState(rx.State):
         self.chat_input = ""
         self.character_archive_items = []
         self.character_archive_page = 1
+        self.character_archive_record_threshold = 20
         self.current_character_card = CharacterArchiveCard()
         self.current_character_profile = CharacterProfileView()
         self.current_character_relations = []
@@ -720,6 +746,7 @@ class NovelState(rx.State):
                 self.chat_input = ""
                 self.character_archive_items = []
                 self.character_archive_page = 1
+                self.character_archive_record_threshold = 20
                 self.current_character_card = CharacterArchiveCard()
                 self.current_character_profile = CharacterProfileView()
                 self.current_character_relations = []
@@ -750,6 +777,7 @@ class NovelState(rx.State):
         self.chat_input = ""
         self.character_archive_items = []
         self.character_archive_page = 1
+        self.character_archive_record_threshold = 20
         self.current_character_card = CharacterArchiveCard()
         self.current_character_profile = CharacterProfileView()
         self.current_character_relations = []

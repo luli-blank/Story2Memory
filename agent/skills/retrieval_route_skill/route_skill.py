@@ -13,7 +13,7 @@ from dotenv import load_dotenv
 from langchain_core.messages import HumanMessage, SystemMessage
 from langchain_openai import ChatOpenAI
 
-from agent.graph import apply_llm_network_settings
+from agent.graph import apply_llm_network_settings, wrap_tracked_llm
 
 try:
     from agent.prompt import ROUTE_SKILL_PATH_MAPPING_PROMPT
@@ -288,7 +288,7 @@ def _extract_json_object(raw: str) -> dict[str, Any] | None:
 
 
 @lru_cache(maxsize=1)
-def _build_route_llm() -> ChatOpenAI | None:
+def _build_route_llm() -> Any | None:
     _load_runtime_env()
     api_key = (
         os.getenv("ROUTE_SKILL_API_KEY", "").strip()
@@ -318,7 +318,7 @@ def _build_route_llm() -> ChatOpenAI | None:
     if base_url:
         kwargs["base_url"] = base_url
     apply_llm_network_settings(kwargs)
-    return ChatOpenAI(**kwargs)
+    return wrap_tracked_llm(ChatOpenAI(**kwargs))
 
 
 def _classify_intent_rule(user_query: str) -> str:

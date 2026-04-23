@@ -22,7 +22,7 @@ from openai import OpenAI
 from volcenginesdkarkruntime import Ark
 
 from agent.prompt import HYBRID_RESULT_FILTER_PROMPT
-from agent.graph import apply_llm_network_settings
+from agent.graph import apply_llm_network_settings, wrap_tracked_llm
 from database.qdrant_client import (
     CHAPTER_COLLECTION,
     PLOT_COLLECTION,
@@ -463,7 +463,7 @@ def _get_entity_embedding_query_client() -> EmbeddingQueryClient:
     return EmbeddingQueryClient(model_override=model)
 
 
-def _build_hybrid_filter_llm() -> ChatOpenAI:
+def _build_hybrid_filter_llm() -> Any:
     _load_runtime_env()
     api_key = os.getenv("LLM_API_KEY", "").strip()
     if not api_key:
@@ -481,11 +481,11 @@ def _build_hybrid_filter_llm() -> ChatOpenAI:
     if base_url:
         kwargs["base_url"] = base_url
     apply_llm_network_settings(kwargs)
-    return ChatOpenAI(**kwargs)
+    return wrap_tracked_llm(ChatOpenAI(**kwargs))
 
 
 @lru_cache(maxsize=1)
-def _get_hybrid_filter_llm() -> ChatOpenAI:
+def _get_hybrid_filter_llm() -> Any:
     return _build_hybrid_filter_llm()
 
 

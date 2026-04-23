@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import reflex as rx
 
-from ..state import CharacterArchiveCard, NovelState
+from ..state import CharacterArchiveCard, CHARACTER_ARCHIVE_RECORD_THRESHOLD_OPTIONS, NovelState
 from .common import archive_section_heading, archive_section_shell, glass_panel
 
 
@@ -111,10 +111,24 @@ def character_archive_view() -> rx.Component:
             rx.hstack(
                 archive_section_heading(
                     "角色档案",
-                    "按记录数量排序浏览角色档案。卡片采用分页展示，进入单角色页可查看完整画像与关系。",
+                    "按记录数量排序浏览角色档案。只展示记录数高于当前阈值的角色，进入单角色页可查看完整画像与关系。",
                     "Dossier Index",
                 ),
                 rx.spacer(),
+                rx.vstack(
+                    rx.text("全书角色展示", color="#bfdbfe", font_size="0.78rem", font_weight="700"),
+                    rx.select(
+                        [str(option) for option in CHARACTER_ARCHIVE_RECORD_THRESHOLD_OPTIONS],
+                        value=NovelState.character_archive_record_threshold.to_string(),
+                        on_change=NovelState.set_character_archive_record_threshold,
+                        width="110px",
+                        radius="large",
+                        color_scheme="cyan",
+                    ),
+                    rx.text("仅显示记录数大于当前值的角色", color="#64748b", font_size="0.72rem"),
+                    align="start",
+                    spacing="1",
+                ),
                 rx.button(
                     "← 返回书籍详情",
                     on_click=NovelState.back_to_book_detail,
@@ -136,7 +150,7 @@ def character_archive_view() -> rx.Component:
                 width="100%",
             ),
             rx.cond(
-                NovelState.character_archive_items,
+                NovelState.character_archive_has_visible_items,
                 rx.vstack(
                     rx.grid(
                         rx.foreach(NovelState.character_archive_page_items, character_archive_card),
@@ -195,7 +209,7 @@ def character_archive_view() -> rx.Component:
                     align="stretch",
                 ),
                 archive_section_shell(
-                    rx.text("当前书籍暂无可展示的角色档案数据。", color="#94a3b8", font_size="0.92rem"),
+                    rx.text("当前阈值下暂无可展示的角色档案数据。", color="#94a3b8", font_size="0.92rem"),
                     width="100%",
                 ),
             ),

@@ -5,6 +5,7 @@ import hashlib
 import json
 import logging
 import os
+import random
 import re
 import sys
 from pathlib import Path
@@ -19,14 +20,16 @@ ROOT_DIR = Path(__file__).resolve().parents[1]
 if str(ROOT_DIR) not in sys.path:
     sys.path.insert(0, str(ROOT_DIR))
 
-from agent.graph import build_llm
-from rag.prompt import (
+from agent.graph import build_llm  # noqa: E402
+from rag.prompt import (  # noqa: E402
     CHARACTER_CANONICAL_REWRITE_PROMPT,
     CHARACTER_DIRTY_REVIEW_PROMPT,
     CHARACTER_GROUP_FINALIZE_PROMPT,
     CHARACTER_GENERIC_REWRITE_PROMPT,
-    CHARACTER_MERGE_CANDIDATE_PROMPT,
-    CHARACTER_MERGE_DECISION_PROMPT,
+    CHARACTER_MERGE_CANDIDATE_GROUP_PROMPT,
+    CHARACTER_MERGE_IDENTITY_SUMMARY_PROMPT,
+    CHARACTER_MERGE_GROUP_RESOLUTION_PROMPT,
+    CHARACTER_SECOND_PASS_GROUP_RESOLUTION_PROMPT,
 )
 
 ENV_OVERRIDE_VAR = "STORY2MEMORY_ENV_OVERRIDE"
@@ -49,12 +52,21 @@ CHARACTER_GENERIC_REWRITE_MAX_CONTENT_EXCERPT_CHARS = 240
 CHARACTER_GENERIC_REWRITE_MAX_CONCURRENCY = 25
 CHARACTER_GROUP_FINALIZE_MODEL = "Doubao-Seed-2.0-lite"
 CHARACTER_GROUP_FINALIZE_MAX_CONCURRENCY = 6
+CHARACTER_SECOND_PASS_MODEL = str(os.getenv("CHARACTER_SECOND_PASS_MODEL", "")).strip() or str(
+    os.getenv("LLM_MODEL", "deepseek-v3.2")
+).strip() or "deepseek-v3.2"
+CHARACTER_SECOND_PASS_GROUP_RESOLUTION_MAX_CONCURRENCY = 4
+CHARACTER_SECOND_PASS_MAX_EVIDENCE_SNIPPETS = 5
 CHARACTER_CANONICAL_REWRITE_BATCH_SIZE = 60
 CHARACTER_CANONICAL_REWRITE_MAX_CONCURRENCY = 12
-CHARACTER_MERGE_RECALL_BLOCK_MAX_ITEMS = 24
-CHARACTER_MERGE_RECALL_MAX_CONCURRENCY = 12
-CHARACTER_MERGE_DECISION_MAX_CONCURRENCY = 16
-CHARACTER_MERGE_RECORD_SAMPLE_LIMIT = 4
+CHARACTER_MERGE_RECALL_MAX_CONCURRENCY = 4
+CHARACTER_MERGE_IDENTITY_SUMMARY_MAX_CONCURRENCY = 12
+CHARACTER_MERGE_GROUP_RESOLUTION_MAX_CONCURRENCY = 8
+CHARACTER_MERGE_CONNECTION_ERROR_MAX_ATTEMPTS = 3
+CHARACTER_MERGE_IDENTITY_SUMMARY_FULL_TEXT_THRESHOLD = 5
+CHARACTER_MERGE_IDENTITY_SUMMARY_MAX_SUMMARIES = 100
+CHARACTER_MERGE_IDENTITY_SUMMARY_FRONT_SAMPLES = 20
+CHARACTER_MERGE_IDENTITY_SUMMARY_BACK_SAMPLES = 20
 BLOCKED_CHARACTER_ALIASES = {
     "鬼",
     "人",
@@ -212,6 +224,44 @@ GENERIC_DESCRIPTOR_SUFFIXES = (
     "客人",
     "大副",
     "女王",
+)
+CHARACTER_HONORIFIC_SUFFIXES = (
+    "先生",
+    "太太",
+    "小姐",
+    "夫人",
+    "女士",
+    "少爷",
+    "老爷",
+)
+CHARACTER_SECOND_PASS_TITLE_SUFFIXES = tuple(
+    sorted(
+        {
+            *CHARACTER_HONORIFIC_SUFFIXES,
+            "公主",
+            "命",
+            "家主",
+            "研究员",
+            "董事长",
+            "姓男生",
+            "姓女生",
+            "姓男孩",
+            "姓女孩",
+            "会长",
+            "部长",
+            "所长",
+            "经理",
+            "副所长",
+            "少校",
+            "中队长",
+            "副中队长",
+            "勋爵",
+            "医生",
+            "大夫",
+        },
+        key=len,
+        reverse=True,
+    )
 )
 
 
@@ -552,6 +602,42 @@ def _extract_content_excerpt(content: Any, keyword: str, limit: int = CHARACTER_
     return text[start:end].strip()
 
 
+def _pick_first_text(source: dict[str, Any], keys: tuple[str, ...]) -> str:
+    for key in keys:
+        text = str(source.get(key) or "").strip()
+        if text:
+            return text
+    return ""
+
+
+def _normalize_named_description_list(value: Any) -> list[dict[str, str]]:
+    source = value
+    if isinstance(source, dict):
+        source = [{"name": key, "description": item} for key, item in source.items()]
+    elif isinstance(source, str):
+        source = [source]
+    if not isinstance(source, list):
+        return []
+
+    normalized: list[dict[str, str]] = []
+    seen: set[tuple[str, str]] = set()
+    for item in source:
+        if isinstance(item, dict):
+            name = _pick_first_text(item, ("name", "title", "entity", "item", "organization", "organization_name"))
+            description = _pick_first_text(item, ("description", "summary", "info", "content", "detail", "note", "text"))
+        else:
+            name = str(item or "").strip()
+            description = ""
+        if not name and not description:
+            continue
+        signature = (name, description)
+        if signature in seen:
+            continue
+        normalized.append({"name": name, "description": description})
+        seen.add(signature)
+    return normalized
+
+
 def _normalize_ambiguous_character_mentions(value: Any) -> list[dict[str, str]]:
     if not isinstance(value, list):
         return []
@@ -705,6 +791,31 @@ def _extract_json_array(text: str) -> list[dict[str, Any]]:
     if not isinstance(parsed, list):
         return []
     return [item for item in parsed if isinstance(item, dict)]
+
+
+def _is_connection_like_error(exc: Exception) -> bool:
+    visited: set[int] = set()
+    current: BaseException | None = exc
+    while current is not None and id(current) not in visited:
+        visited.add(id(current))
+        message = str(current).strip().lower()
+        name = current.__class__.__name__.lower()
+        if "connection error" in message:
+            return True
+        if "connect error" in message:
+            return True
+        if "connection reset" in message:
+            return True
+        if "connection aborted" in message:
+            return True
+        if "server disconnected" in message:
+            return True
+        if "read timeout" in message:
+            return True
+        if "connecttimeout" in name or "readtimeout" in name:
+            return True
+        current = current.__cause__ or current.__context__
+    return False
 
 
 def _requires_generic_character_rewrite(item: dict[str, Any]) -> bool:
@@ -1047,223 +1158,637 @@ async def _rewrite_character_batches(
     ]
 
 
-def _candidate_blocking_keys(item: dict[str, Any]) -> list[str]:
-    keys: list[str] = []
-    seen: set[str] = set()
-    for candidate in _available_character_name_candidates(item):
-        text = _sanitize_character_candidate(candidate)
-        key = _normalize_text_key(text)
-        if not key or len(key) < 2 or key in seen:
-            continue
-        keys.append(key)
-        seen.add(key)
-    return keys
-
-
-def _build_merge_recall_blocks(items: list[dict[str, Any]]) -> list[list[dict[str, Any]]]:
-    by_key: dict[str, list[dict[str, Any]]] = {}
+def _prefold_identical_name_items(items: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    folded_by_name: dict[str, dict[str, Any]] = {}
+    order: list[str] = []
     for item in items:
-        for key in _candidate_blocking_keys(item):
-            by_key.setdefault(key, []).append(item)
-
-    blocks: list[list[dict[str, Any]]] = []
-    seen_blocks: set[tuple[str, ...]] = set()
-    overlap = 4
-    step = max(1, CHARACTER_MERGE_RECALL_BLOCK_MAX_ITEMS - overlap)
-    for rows in by_key.values():
-        deduped: list[dict[str, Any]] = []
-        seen_ids: set[str] = set()
-        for row in rows:
-            item_id = str(row.get("_item_id") or "")
-            if not item_id or item_id in seen_ids:
-                continue
-            deduped.append(row)
-            seen_ids.add(item_id)
-        if len(deduped) < 2:
+        name = str(item.get("name") or "").strip()
+        key = _normalize_text_key(name)
+        if not key:
             continue
-        deduped.sort(key=lambda row: str(row.get("name") or ""))
-        if len(deduped) <= CHARACTER_MERGE_RECALL_BLOCK_MAX_ITEMS:
-            signature = tuple(str(row.get("_item_id") or "") for row in deduped)
-            if signature not in seen_blocks:
-                blocks.append(deduped)
-                seen_blocks.add(signature)
+        aliases = _dedupe_texts([str(alias or "").strip() for alias in item.get("aliases") or [] if str(alias or "").strip()])
+        existing = folded_by_name.get(key)
+        if existing is None:
+            folded_by_name[key] = {
+                **item,
+                "name": name,
+                "aliases": aliases,
+                "records": _normalize_records(item.get("records")),
+            }
+            order.append(key)
             continue
-        for index in range(0, len(deduped), step):
-            chunk = deduped[index : index + CHARACTER_MERGE_RECALL_BLOCK_MAX_ITEMS]
-            if len(chunk) < 2:
-                continue
-            signature = tuple(str(row.get("_item_id") or "") for row in chunk)
-            if signature in seen_blocks:
-                continue
-            blocks.append(chunk)
-            seen_blocks.add(signature)
-    return blocks
+        existing["aliases"] = _merge_alias_lists(existing.get("aliases") or [], aliases)
+        existing["records"] = _merge_group_records([existing, item])
+    return [folded_by_name[key] for key in order]
 
 
-async def _recall_single_merge_block(
+def _normalize_candidate_group_item_ids(
+    raw_groups: list[dict[str, Any]],
+    valid_ids: set[str],
+) -> list[list[str]]:
+    normalized: list[list[str]] = []
+    seen: set[tuple[str, ...]] = set()
+    for row in raw_groups:
+        raw_ids = row.get("item_ids") or row.get("members") or row.get("group") or []
+        if not isinstance(raw_ids, list):
+            continue
+        group_ids = _dedupe_texts([str(item_id or "").strip() for item_id in raw_ids if str(item_id or "").strip() in valid_ids])
+        if len(group_ids) < 2:
+            continue
+        signature = tuple(sorted(group_ids))
+        if signature in seen:
+            continue
+        normalized.append(group_ids)
+        seen.add(signature)
+    return normalized
+
+
+def _extract_honorific_root(text: Any) -> str:
+    normalized = re.sub(r"\s+", "", str(text or "").strip())
+    if not normalized:
+        return ""
+    for suffix in CHARACTER_HONORIFIC_SUFFIXES:
+        if normalized.endswith(suffix) and len(normalized) > len(suffix):
+            return normalized[: -len(suffix)]
+    return ""
+
+
+def _build_honorific_root_candidate_groups(items: list[dict[str, Any]]) -> list[list[str]]:
+    item_candidates: list[tuple[str, list[str]]] = []
+    honorific_roots: list[str] = []
+    seen_roots: set[str] = set()
+
+    for item in items:
+        item_id = str(item.get("_item_id") or "").strip()
+        if not item_id:
+            continue
+        candidates = [
+            str(candidate or "").strip()
+            for candidate in _available_character_name_candidates(item)
+            if str(candidate or "").strip()
+        ]
+        item_candidates.append((item_id, candidates))
+        for candidate in candidates:
+            root = _extract_honorific_root(candidate)
+            if not root or root in seen_roots:
+                continue
+            honorific_roots.append(root)
+            seen_roots.add(root)
+
+    groups: list[list[str]] = []
+    seen_signatures: set[tuple[str, ...]] = set()
+    for root in honorific_roots:
+        matched_ids = [
+            item_id
+            for item_id, candidates in item_candidates
+            if any(root in re.sub(r"\s+", "", candidate) for candidate in candidates)
+        ]
+        if len(matched_ids) < 2:
+            continue
+        signature = tuple(matched_ids)
+        if signature in seen_signatures:
+            continue
+        groups.append(matched_ids)
+        seen_signatures.add(signature)
+    return groups
+
+
+def _merge_overlapping_candidate_group_ids(
+    candidate_groups: list[list[str]],
+    order_map: dict[str, int],
+) -> list[list[str]]:
+    pending = [set(group) for group in candidate_groups if len(group) >= 2]
+    merged: list[list[str]] = []
+    while pending:
+        current = pending.pop(0)
+        changed = True
+        while changed:
+            changed = False
+            next_pending: list[set[str]] = []
+            for other in pending:
+                if current & other:
+                    current |= other
+                    changed = True
+                    continue
+                next_pending.append(other)
+            pending = next_pending
+        merged.append(sorted(current, key=lambda item_id: order_map.get(item_id, 10**9)))
+    merged.sort(key=lambda group: tuple(order_map.get(item_id, 10**9) for item_id in group))
+    return merged
+
+
+def _materialize_candidate_groups(
+    items: list[dict[str, Any]],
+    candidate_group_ids: list[list[str]],
+) -> list[list[dict[str, Any]]]:
+    items_by_id = {str(item.get("_item_id") or ""): item for item in items}
+    order_map = {str(item.get("_item_id") or ""): index for index, item in enumerate(items)}
+    merged_group_ids = _merge_overlapping_candidate_group_ids(candidate_group_ids, order_map)
+    return [
+        [items_by_id[item_id] for item_id in group_ids if item_id in items_by_id]
+        for group_ids in merged_group_ids
+        if len(group_ids) >= 2
+    ]
+
+
+def _extract_second_pass_bucket_root(text: Any) -> str:
+    value = str(text or "").strip()
+    if not value:
+        return ""
+    for suffix in CHARACTER_SECOND_PASS_TITLE_SUFFIXES:
+        if value.endswith(suffix) and len(value) > len(suffix):
+            return value[: -len(suffix)].strip()
+    return ""
+
+
+def _record_mentions_second_pass_candidate(text: str, candidate: str) -> bool:
+    normalized_candidate = _normalize_text_key(candidate)
+    if not normalized_candidate:
+        return False
+    for bridge in ("改名为", "改叫", "又叫", "也叫", "叫做", "名为", "本名为", "称为", "自称", "代号", "就是", "即"):
+        if f"{bridge}{candidate}" in text or f"{bridge}“{candidate}”" in text or f"{bridge}'{candidate}'" in text:
+            return True
+    return False
+
+
+def _build_second_pass_candidate_groups(items: list[dict[str, Any]]) -> list[list[str]]:
+    if not items:
+        return []
+
+    item_candidates: list[tuple[str, list[str]]] = [
+        (
+            str(item.get("_item_id") or ""),
+            _available_character_name_candidates(item),
+        )
+        for item in items
+        if str(item.get("_item_id") or "")
+    ]
+    order_map = {str(item.get("_item_id") or ""): index for index, item in enumerate(items)}
+    candidate_group_ids: list[list[str]] = []
+    seen_signatures: set[tuple[str, ...]] = set()
+
+    roots: list[str] = []
+    seen_roots: set[str] = set()
+    for _, candidates in item_candidates:
+        for candidate in candidates:
+            root = _extract_second_pass_bucket_root(candidate)
+            root_key = _normalize_text_key(root)
+            if not root_key or root_key in seen_roots:
+                continue
+            roots.append(root)
+            seen_roots.add(root_key)
+
+    for root in roots:
+        matched_ids = [
+            item_id
+            for item_id, candidates in item_candidates
+            if any(root in re.sub(r"\s+", "", candidate) for candidate in candidates)
+        ]
+        if len(matched_ids) < 2:
+            continue
+        signature = tuple(matched_ids)
+        if signature in seen_signatures:
+            continue
+        candidate_group_ids.append(matched_ids)
+        seen_signatures.add(signature)
+
+    items_by_id = {str(item.get("_item_id") or ""): item for item in items}
+    for source_id, _ in item_candidates:
+        source_item = items_by_id.get(source_id) or {}
+        record_text = "\n".join(
+            str(description or "").strip()
+            for _, description in _normalize_records(source_item.get("records"))
+            if str(description or "").strip()
+        )
+        if not record_text:
+            continue
+        for target_id, target_candidates in item_candidates:
+            if not target_id or target_id == source_id:
+                continue
+            if any(_record_mentions_second_pass_candidate(record_text, candidate) for candidate in target_candidates):
+                signature = tuple(
+                    sorted(
+                        [source_id, target_id],
+                        key=lambda item_id: order_map.get(item_id, 10**9),
+                    )
+                )
+                if signature in seen_signatures:
+                    continue
+                candidate_group_ids.append(list(signature))
+                seen_signatures.add(signature)
+
+    return _merge_overlapping_candidate_group_ids(candidate_group_ids, order_map)
+
+
+async def _recall_merge_candidate_groups(
     llm_client: Any,
-    semaphore: asyncio.Semaphore,
-    block_items: list[dict[str, Any]],
-) -> list[dict[str, Any]]:
+    items: list[dict[str, Any]],
+) -> list[list[str]]:
+    if not items:
+        return []
     prompt_items = [
         {
             "item_id": str(item.get("_item_id") or ""),
             "name": str(item.get("name") or "").strip(),
             "aliases": [str(alias or "").strip() for alias in item.get("aliases") or [] if str(alias or "").strip()],
         }
-        for item in block_items
+        for item in items
     ]
-    prompt = CHARACTER_MERGE_CANDIDATE_PROMPT.format(items_json=json.dumps(prompt_items, ensure_ascii=False))
+    prompt = CHARACTER_MERGE_CANDIDATE_GROUP_PROMPT.format(items_json=json.dumps(prompt_items, ensure_ascii=False, indent=2))
+    semaphore = asyncio.Semaphore(CHARACTER_MERGE_RECALL_MAX_CONCURRENCY)
     async with semaphore:
         raw_text = await _invoke_llm_text(llm_client, prompt)
-    return _extract_json_array(raw_text)
+    candidate_groups = _normalize_candidate_group_item_ids(
+        _extract_json_array(raw_text),
+        {str(item.get("_item_id") or "") for item in items},
+    )
+    candidate_groups.extend(_build_honorific_root_candidate_groups(items))
+    return candidate_groups
 
 
-async def _recall_merge_candidate_pairs(
-    llm_client: Any,
-    items: list[dict[str, Any]],
-) -> set[frozenset[str]]:
-    blocks = _build_merge_recall_blocks(items)
-    if not blocks:
-        return set()
-    semaphore = asyncio.Semaphore(CHARACTER_MERGE_RECALL_MAX_CONCURRENCY)
-    pairs: set[frozenset[str]] = set()
+def _sample_identity_summary_chapter_indexes(
+    chapter_indexes: list[int],
+    seed_text: str,
+    limit: int = CHARACTER_MERGE_IDENTITY_SUMMARY_MAX_SUMMARIES,
+) -> list[int]:
+    unique_indexes = sorted({int(item) for item in chapter_indexes if int(item) > 0})
+    if len(unique_indexes) <= limit:
+        return unique_indexes
 
-    async def _run_single(block_items: list[dict[str, Any]]) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
-        try:
-            recalled = await _recall_single_merge_block(llm_client, semaphore, block_items)
-        except Exception as exc:
-            logger.warning("[characters] merge recall block failed: %s", exc)
-            recalled = []
-        return block_items, recalled
+    front_count = min(CHARACTER_MERGE_IDENTITY_SUMMARY_FRONT_SAMPLES, limit)
+    remaining_limit = max(0, limit - front_count)
+    back_count = min(CHARACTER_MERGE_IDENTITY_SUMMARY_BACK_SAMPLES, remaining_limit)
+    middle_limit = max(0, limit - front_count - back_count)
 
-    tasks = [asyncio.create_task(_run_single(block)) for block in blocks]
-    for task in asyncio.as_completed(tasks):
-        block_items, recalled = await task
-        valid_ids = {str(item.get("_item_id") or "") for item in block_items}
-        for row in recalled:
-            left = str(row.get("left_item_id") or "").strip()
-            right = str(row.get("right_item_id") or "").strip()
-            if not left or not right or left == right:
-                continue
-            if left not in valid_ids or right not in valid_ids:
-                continue
-            pairs.add(frozenset({left, right}))
-    return pairs
+    front = unique_indexes[:front_count]
+    back = unique_indexes[-back_count:] if back_count else []
+    middle_pool = unique_indexes[front_count : len(unique_indexes) - back_count]
+    if middle_limit <= 0 or not middle_pool:
+        return sorted(front + back)
+
+    if len(middle_pool) <= middle_limit:
+        middle = middle_pool
+    else:
+        seed = int(_hash_text(seed_text), 16)
+        rng = random.Random(seed)
+        middle = sorted(rng.sample(middle_pool, middle_limit))
+    return sorted(front + middle + back)
 
 
-def _sample_character_records(item: dict[str, Any], limit: int = CHARACTER_MERGE_RECORD_SAMPLE_LIMIT) -> list[list[Any]]:
+def _build_identity_summary_context(
+    item: dict[str, Any],
+    chapter_contexts: dict[int, dict[str, Any]],
+) -> dict[str, Any]:
     records = _normalize_records(item.get("records"))
-    if len(records) <= limit:
-        return records
-    head = records[: max(1, limit // 2)]
-    tail = records[-max(1, limit - len(head)) :]
-    sampled: list[list[Any]] = []
-    seen: set[tuple[Any, Any]] = set()
-    for record in [*head, *tail]:
-        signature = (record[0], record[1])
-        if signature in seen:
+    descriptions_by_chapter: dict[int, list[str]] = {}
+    for chapter_index, description in records:
+        if not isinstance(chapter_index, int) or chapter_index <= 0 or not str(description or "").strip():
             continue
-        sampled.append(record)
-        seen.add(signature)
-    return sampled[:limit]
+        descriptions_by_chapter.setdefault(int(chapter_index), []).append(str(description or "").strip())
+
+    chapter_indexes = sorted(descriptions_by_chapter.keys())
+    source_mode = (
+        "chapter_contents"
+        if len(chapter_indexes) < CHARACTER_MERGE_IDENTITY_SUMMARY_FULL_TEXT_THRESHOLD
+        else "chapter_summaries"
+    )
+    selected_indexes = (
+        chapter_indexes
+        if source_mode == "chapter_contents"
+        else _sample_identity_summary_chapter_indexes(
+            chapter_indexes,
+            seed_text=f"{item.get('_item_id')}|{item.get('name')}",
+        )
+    )
+
+    chapters: list[dict[str, Any]] = []
+    for chapter_index in selected_indexes:
+        chapter_row = chapter_contexts.get(int(chapter_index), {})
+        row = {
+            "chapter_index": int(chapter_index),
+            "record_descriptions": descriptions_by_chapter.get(int(chapter_index), []),
+        }
+        if source_mode == "chapter_contents":
+            row["chapter_content"] = str(chapter_row.get("content_excerpt") or "").strip()
+        else:
+            row["chapter_summary"] = str(chapter_row.get("chapter_summary") or "").strip()
+        chapters.append(row)
+
+    return {
+        "source_mode": source_mode,
+        "chapters": chapters,
+    }
 
 
-async def _decide_single_merge_pair(
+async def _extract_single_candidate_identity_summary(
     llm_client: Any,
     semaphore: asyncio.Semaphore,
-    left_item: dict[str, Any],
-    right_item: dict[str, Any],
-) -> dict[str, Any]:
-    prompt = CHARACTER_MERGE_DECISION_PROMPT.format(
-        left_json=json.dumps(
-            {
-                "item_id": str(left_item.get("_item_id") or ""),
-                "name": str(left_item.get("name") or "").strip(),
-                "aliases": [str(alias or "").strip() for alias in left_item.get("aliases") or [] if str(alias or "").strip()],
-                "records": _sample_character_records(left_item),
-            },
+    item: dict[str, Any],
+    chapter_contexts: dict[int, dict[str, Any]],
+) -> str:
+    context = _build_identity_summary_context(item, chapter_contexts)
+    prompt = CHARACTER_MERGE_IDENTITY_SUMMARY_PROMPT.format(
+        character_name=str(item.get("name") or "").strip(),
+        aliases_json=json.dumps(
+            [str(alias or "").strip() for alias in item.get("aliases") or [] if str(alias or "").strip()],
             ensure_ascii=False,
-            indent=2,
         ),
-        right_json=json.dumps(
-            {
-                "item_id": str(right_item.get("_item_id") or ""),
-                "name": str(right_item.get("name") or "").strip(),
-                "aliases": [str(alias or "").strip() for alias in right_item.get("aliases") or [] if str(alias or "").strip()],
-                "records": _sample_character_records(right_item),
-            },
-            ensure_ascii=False,
-            indent=2,
-        ),
+        source_mode_label="章节原文" if context["source_mode"] == "chapter_contents" else "章节摘要",
+        evidence_json=json.dumps(context["chapters"], ensure_ascii=False, indent=2),
     )
     async with semaphore:
         raw_text = await _invoke_llm_text(llm_client, prompt)
-    return _extract_json_object(raw_text) or {}
+    parsed = _extract_json_object(raw_text) or {}
+    summary = str(parsed.get("identity_summary") or "").strip()
+    if summary:
+        return summary
+    fallback_bits = _dedupe_texts(
+        [
+            str(item.get("name") or "").strip(),
+            *[str(alias or "").strip() for alias in item.get("aliases") or []],
+            *[
+                str(description or "").strip()
+                for chapter in context["chapters"]
+                for description in list(chapter.get("record_descriptions") or [])
+            ],
+        ]
+    )
+    return "；".join(fallback_bits[:6])
 
 
-async def _decide_merge_pairs(
+async def _extract_candidate_identity_summaries(
     llm_client: Any,
-    items: list[dict[str, Any]],
-    candidate_pairs: set[frozenset[str]],
-) -> dict[frozenset[str], str]:
-    if not candidate_pairs:
+    book_id: int,
+    candidate_groups: list[list[dict[str, Any]]],
+) -> dict[str, str]:
+    unique_items: list[dict[str, Any]] = []
+    seen_ids: set[str] = set()
+    chapter_indexes: list[int] = []
+    for group in candidate_groups:
+        for item in group:
+            item_id = str(item.get("_item_id") or "")
+            if not item_id or item_id in seen_ids:
+                continue
+            unique_items.append(item)
+            seen_ids.add(item_id)
+            chapter_indexes.extend(
+                int(chapter_index)
+                for chapter_index, _ in _normalize_records(item.get("records"))
+                if isinstance(chapter_index, int) and int(chapter_index) > 0
+            )
+
+    if not unique_items:
         return {}
-    items_by_id = {str(item.get("_item_id") or ""): item for item in items}
-    semaphore = asyncio.Semaphore(CHARACTER_MERGE_DECISION_MAX_CONCURRENCY)
-    decisions: dict[frozenset[str], str] = {}
 
-    async def _run_single(pair: frozenset[str]) -> tuple[frozenset[str], str]:
-        left_id, right_id = sorted(pair)
-        left_item = items_by_id.get(left_id)
-        right_item = items_by_id.get(right_id)
-        if left_item is None or right_item is None:
-            return pair, "different_person"
+    chapter_contexts = _load_chapter_contexts(book_id, chapter_indexes)
+    semaphore = asyncio.Semaphore(CHARACTER_MERGE_IDENTITY_SUMMARY_MAX_CONCURRENCY)
+
+    async def _run_single(item: dict[str, Any]) -> tuple[str, str]:
+        item_id = str(item.get("_item_id") or "")
         try:
-            payload = await _decide_single_merge_pair(llm_client, semaphore, left_item, right_item)
+            summary = await _extract_single_candidate_identity_summary(llm_client, semaphore, item, chapter_contexts)
         except Exception as exc:
-            logger.warning("[characters] merge decision failed for %s/%s: %s", left_id, right_id, exc)
-            payload = {}
-        decision = str(payload.get("decision") or "").strip().lower()
-        if decision not in {"same_person", "different_person", "uncertain"}:
-            decision = "uncertain"
-        return pair, decision
+            logger.warning("[characters] identity summary extraction failed for %s: %s", item.get("name"), exc)
+            summary = str(item.get("name") or "").strip()
+        return item_id, summary
 
-    tasks = [asyncio.create_task(_run_single(pair)) for pair in sorted(candidate_pairs, key=lambda pair: tuple(sorted(pair)))]
+    tasks = [asyncio.create_task(_run_single(item)) for item in unique_items]
+    identity_summary_map: dict[str, str] = {}
     for task in asyncio.as_completed(tasks):
-        pair, decision = await task
-        decisions[pair] = decision
-    return decisions
+        item_id, summary = await task
+        if item_id:
+            identity_summary_map[item_id] = summary
+    return identity_summary_map
 
 
-def _group_items_for_merge(
-    items: list[dict[str, Any]],
-    decisions: dict[frozenset[str], str],
-) -> list[list[dict[str, Any]]]:
-    items_by_id = {str(item.get("_item_id") or ""): item for item in items}
-    same_pairs = {
-        pair
-        for pair, decision in decisions.items()
-        if decision == "same_person"
+def _build_candidate_group_resolution_payload(
+    group: list[dict[str, Any]],
+    identity_summary_map: dict[str, str],
+) -> dict[str, Any]:
+    return {
+        "items": [
+            {
+                "item_id": str(item.get("_item_id") or ""),
+                "name": str(item.get("name") or "").strip(),
+                "aliases": [str(alias or "").strip() for alias in item.get("aliases") or [] if str(alias or "").strip()],
+                "identity_summary": str(identity_summary_map.get(str(item.get("_item_id") or ""), "") or "").strip(),
+            }
+            for item in group
+        ]
     }
-    remaining = {item_id for item_id in items_by_id}
-    groups: list[list[dict[str, Any]]] = []
 
-    for item_id in sorted(remaining):
-        if item_id not in remaining:
+
+def _build_second_pass_evidence_snippets(group: list[dict[str, Any]], item: dict[str, Any]) -> list[dict[str, Any]]:
+    own_candidates = {_normalize_text_key(candidate) for candidate in _available_character_name_candidates(item)}
+    other_candidates = [
+        candidate
+        for group_item in group
+        if group_item is not item
+        for candidate in _available_character_name_candidates(group_item)
+        if _normalize_text_key(candidate) and _normalize_text_key(candidate) not in own_candidates
+    ]
+    prioritized: list[dict[str, Any]] = []
+    regular: list[dict[str, Any]] = []
+    seen_signatures: set[tuple[Any, str]] = set()
+    for chapter_index, description in _normalize_records(item.get("records")):
+        text = str(description or "").strip()
+        if not text:
             continue
-        group_ids = [item_id]
-        remaining.remove(item_id)
-        changed = True
-        while changed:
-            changed = False
-            for candidate_id in sorted(list(remaining)):
-                if all(frozenset({candidate_id, member_id}) in same_pairs for member_id in group_ids):
-                    group_ids.append(candidate_id)
-                    remaining.remove(candidate_id)
-                    changed = True
-        groups.append([items_by_id[group_id] for group_id in group_ids])
-    return groups
+        signature = (chapter_index, text)
+        if signature in seen_signatures:
+            continue
+        seen_signatures.add(signature)
+        row = {"chapter_index": chapter_index, "snippet": text}
+        if any(_record_mentions_second_pass_candidate(text, candidate) for candidate in other_candidates):
+            prioritized.append(row)
+        else:
+            regular.append(row)
+
+    selected: list[dict[str, Any]] = []
+    for row in prioritized + regular:
+        if row in selected:
+            continue
+        selected.append(row)
+        if len(selected) >= CHARACTER_SECOND_PASS_MAX_EVIDENCE_SNIPPETS:
+            break
+    return selected
+
+
+def _build_second_pass_group_resolution_payload(
+    group: list[dict[str, Any]],
+    identity_summary_map: dict[str, str],
+) -> dict[str, Any]:
+    return {
+        "items": [
+            {
+                "item_id": str(item.get("_item_id") or ""),
+                "name": str(item.get("name") or "").strip(),
+                "aliases": [str(alias or "").strip() for alias in item.get("aliases") or [] if str(alias or "").strip()],
+                "identity_summary": str(identity_summary_map.get(str(item.get("_item_id") or ""), "") or "").strip(),
+                "evidence_snippets": _build_second_pass_evidence_snippets(group, item),
+            }
+            for item in group
+        ]
+    }
+
+
+def _apply_candidate_group_resolution_result(
+    group: list[dict[str, Any]],
+    result: dict[str, Any],
+) -> list[list[dict[str, Any]]]:
+    items_by_id = {str(item.get("_item_id") or ""): item for item in group}
+    ordered_ids = [str(item.get("_item_id") or "") for item in group if str(item.get("_item_id") or "")]
+    used_ids: set[str] = set()
+    resolved: list[list[dict[str, Any]]] = []
+
+    raw_groups = result.get("resolved_groups") or result.get("groups") or []
+    if isinstance(raw_groups, list):
+        for raw_group in raw_groups:
+            raw_ids = raw_group if isinstance(raw_group, list) else raw_group.get("item_ids") or raw_group.get("members") or []
+            if not isinstance(raw_ids, list):
+                continue
+            group_ids = _dedupe_texts(
+                [
+                    str(item_id or "").strip()
+                    for item_id in raw_ids
+                    if str(item_id or "").strip() in items_by_id and str(item_id or "").strip() not in used_ids
+                ]
+            )
+            if not group_ids:
+                continue
+            resolved.append([items_by_id[item_id] for item_id in group_ids])
+            used_ids.update(group_ids)
+
+    for item_id in ordered_ids:
+        if item_id and item_id not in used_ids:
+            resolved.append([items_by_id[item_id]])
+    return resolved
+
+
+async def _resolve_single_candidate_group(
+    llm_client: Any,
+    semaphore: asyncio.Semaphore,
+    group: list[dict[str, Any]],
+    identity_summary_map: dict[str, str],
+) -> list[list[dict[str, Any]]]:
+    prompt = CHARACTER_MERGE_GROUP_RESOLUTION_PROMPT.format(
+        group_json=json.dumps(_build_candidate_group_resolution_payload(group, identity_summary_map), ensure_ascii=False, indent=2)
+    )
+    last_error: Exception | None = None
+    for attempt in range(1, CHARACTER_MERGE_CONNECTION_ERROR_MAX_ATTEMPTS + 1):
+        try:
+            async with semaphore:
+                raw_text = await _invoke_llm_text(llm_client, prompt)
+            return _apply_candidate_group_resolution_result(group, _extract_json_object(raw_text) or {})
+        except Exception as exc:
+            last_error = exc
+            if not _is_connection_like_error(exc) or attempt >= CHARACTER_MERGE_CONNECTION_ERROR_MAX_ATTEMPTS:
+                raise
+            logger.warning(
+                "[characters] candidate group resolution connection retry attempt=%d/%d size=%d error=%s",
+                attempt,
+                CHARACTER_MERGE_CONNECTION_ERROR_MAX_ATTEMPTS,
+                len(group),
+                exc,
+            )
+    if last_error is not None:
+        raise last_error
+    return [[item] for item in group]
+
+
+async def _resolve_single_second_pass_group(
+    llm_client: Any,
+    semaphore: asyncio.Semaphore,
+    group: list[dict[str, Any]],
+    identity_summary_map: dict[str, str],
+) -> list[list[dict[str, Any]]]:
+    prompt = CHARACTER_SECOND_PASS_GROUP_RESOLUTION_PROMPT.format(
+        group_json=json.dumps(
+            _build_second_pass_group_resolution_payload(group, identity_summary_map),
+            ensure_ascii=False,
+            indent=2,
+        )
+    )
+    last_error: Exception | None = None
+    for attempt in range(1, CHARACTER_MERGE_CONNECTION_ERROR_MAX_ATTEMPTS + 1):
+        try:
+            async with semaphore:
+                raw_text = await _invoke_llm_text(llm_client, prompt)
+            return _apply_candidate_group_resolution_result(group, _extract_json_object(raw_text) or {})
+        except Exception as exc:
+            last_error = exc
+            if not _is_connection_like_error(exc) or attempt >= CHARACTER_MERGE_CONNECTION_ERROR_MAX_ATTEMPTS:
+                raise
+            logger.warning(
+                "[characters] second-pass resolution connection retry attempt=%d/%d size=%d error=%s",
+                attempt,
+                CHARACTER_MERGE_CONNECTION_ERROR_MAX_ATTEMPTS,
+                len(group),
+                exc,
+            )
+    if last_error is not None:
+        raise last_error
+    return [[item] for item in group]
+
+
+async def _resolve_second_pass_candidate_groups(
+    llm_client: Any,
+    candidate_groups: list[list[dict[str, Any]]],
+    identity_summary_map: dict[str, str],
+) -> list[list[dict[str, Any]]]:
+    if not candidate_groups:
+        return []
+
+    semaphore = asyncio.Semaphore(CHARACTER_SECOND_PASS_GROUP_RESOLUTION_MAX_CONCURRENCY)
+
+    async def _run_single(index: int, group: list[dict[str, Any]]) -> tuple[int, list[list[dict[str, Any]]]]:
+        try:
+            resolved = await _resolve_single_second_pass_group(llm_client, semaphore, group, identity_summary_map)
+        except Exception as exc:
+            logger.warning("[characters] second-pass group resolution failed for %s: %s", index, exc)
+            resolved = [[item] for item in group]
+        return index, resolved
+
+    tasks = [asyncio.create_task(_run_single(index, group)) for index, group in enumerate(candidate_groups)]
+    resolved_by_index: dict[int, list[list[dict[str, Any]]]] = {}
+    for task in asyncio.as_completed(tasks):
+        index, resolved = await task
+        resolved_by_index[index] = resolved
+
+    flattened: list[list[dict[str, Any]]] = []
+    for index in sorted(resolved_by_index):
+        flattened.extend(resolved_by_index[index])
+    return flattened
+
+
+async def _resolve_candidate_groups(
+    llm_client: Any,
+    candidate_groups: list[list[dict[str, Any]]],
+    identity_summary_map: dict[str, str],
+) -> list[list[dict[str, Any]]]:
+    if not candidate_groups:
+        return []
+
+    semaphore = asyncio.Semaphore(CHARACTER_MERGE_GROUP_RESOLUTION_MAX_CONCURRENCY)
+
+    async def _run_single(index: int, group: list[dict[str, Any]]) -> tuple[int, list[list[dict[str, Any]]]]:
+        try:
+            resolved = await _resolve_single_candidate_group(llm_client, semaphore, group, identity_summary_map)
+        except Exception as exc:
+            logger.warning("[characters] candidate group resolution failed for %s: %s", index, exc)
+            resolved = [[item] for item in group]
+        return index, resolved
+
+    tasks = [asyncio.create_task(_run_single(index, group)) for index, group in enumerate(candidate_groups)]
+    resolved_by_index: dict[int, list[list[dict[str, Any]]]] = {}
+    for task in asyncio.as_completed(tasks):
+        index, resolved = await task
+        resolved_by_index[index] = resolved
+
+    flattened: list[list[dict[str, Any]]] = []
+    for index in sorted(resolved_by_index):
+        flattened.extend(resolved_by_index[index])
+    return flattened
 
 
 def _pick_group_canonical_name(group: list[dict[str, Any]]) -> str:
@@ -1465,16 +1990,55 @@ def _finalize_item_groups(groups: list[list[dict[str, Any]]]) -> list[dict[str, 
     return asyncio.run(_finalize_item_groups_async(llm_client, groups))
 
 
-def _run_character_rewrite_and_merge(items: list[dict[str, Any]]) -> list[dict[str, Any]]:
+async def _build_candidate_merge_groups(
+    llm_client: Any,
+    book_id: int,
+    items: list[dict[str, Any]],
+) -> list[list[dict[str, Any]]]:
+    candidate_group_ids = await _recall_merge_candidate_groups(llm_client, items)
+    candidate_groups = _materialize_candidate_groups(items, candidate_group_ids)
+    if not candidate_groups:
+        return [[item] for item in items]
+
+    covered_ids = {
+        str(item.get("_item_id") or "")
+        for group in candidate_groups
+        for item in group
+        if str(item.get("_item_id") or "")
+    }
+    identity_summary_map = await _extract_candidate_identity_summaries(llm_client, int(book_id), candidate_groups)
+    resolved_groups = await _resolve_candidate_groups(llm_client, candidate_groups, identity_summary_map)
+    resolved_groups.extend(
+        [item]
+        for item in items
+        if str(item.get("_item_id") or "") not in covered_ids
+    )
+    order_map = {str(item.get("_item_id") or ""): index for index, item in enumerate(items)}
+    resolved_groups.sort(
+        key=lambda group: min(order_map.get(str(item.get("_item_id") or ""), 10**9) for item in group) if group else 10**9
+    )
+    return resolved_groups
+
+
+async def _run_character_rewrite_and_merge_async(
+    book_id: int,
+    items: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    rewritten_llm_client = build_llm()
+    rewritten_items = await _rewrite_character_batches(rewritten_llm_client, items)
+    prefolded_items = _prefold_identical_name_items(rewritten_items)
+    groups = await _build_candidate_merge_groups(rewritten_llm_client, int(book_id), prefolded_items)
+    if not groups:
+        return []
+    finalize_llm_client = build_llm(CHARACTER_GROUP_FINALIZE_MODEL)
+    return await _finalize_item_groups_async(finalize_llm_client, groups)
+
+
+def _run_character_rewrite_and_merge(book_id: int, items: list[dict[str, Any]]) -> list[dict[str, Any]]:
     normalized_items = _ensure_character_item_ids(items)
     if not normalized_items:
         return []
-    llm_client = build_llm()
-    rewritten_items = asyncio.run(_rewrite_character_batches(llm_client, normalized_items))
-    candidate_pairs = asyncio.run(_recall_merge_candidate_pairs(llm_client, rewritten_items))
-    decisions = asyncio.run(_decide_merge_pairs(llm_client, rewritten_items, candidate_pairs))
-    groups = _group_items_for_merge(rewritten_items, decisions)
-    return _finalize_item_groups(groups)
+    return asyncio.run(_run_character_rewrite_and_merge_async(int(book_id), normalized_items))
 
 
 def _merge_alias_lists(*alias_lists: list[str]) -> list[str]:
@@ -1664,6 +2228,69 @@ def _load_existing_character_rows(book_id: int) -> list[dict[str, Any]]:
     return [row for row in normalized_rows if row["id"] > 0]
 
 
+def _load_active_character_items(book_id: int) -> list[dict[str, Any]]:
+    items: list[dict[str, Any]] = []
+    for row in _load_existing_character_rows(book_id):
+        if str(row.get("NEED_DELETE") or "").strip().lower() != "no":
+            continue
+        items.append(
+            {
+                "_item_id": f"character-row-{int(row['id'])}",
+                "name": str(row.get("name") or "").strip(),
+                "aliases": [str(alias or "").strip() for alias in row.get("aliases") or [] if str(alias or "").strip()],
+                "records": _normalize_records(row.get("records")),
+            }
+        )
+    return items
+
+
+async def _run_second_pass_merge_diagnostic_async(book_id: int, items: list[dict[str, Any]]) -> dict[str, Any]:
+    normalized_items = _ensure_character_item_ids(items)
+    candidate_group_ids = _build_second_pass_candidate_groups(normalized_items)
+    candidate_groups = _materialize_candidate_groups(normalized_items, candidate_group_ids)
+    if not candidate_groups:
+        finalized_items = _merge_same_canonical_character_items(_finalize_character_aliases(normalized_items))
+        return {
+            "candidate_groups": [],
+            "resolved_groups": [[item] for item in normalized_items],
+            "finalized_items": finalized_items,
+        }
+
+    llm_client = build_llm(CHARACTER_SECOND_PASS_MODEL)
+    identity_summary_map = await _extract_candidate_identity_summaries(llm_client, int(book_id), candidate_groups)
+    resolved_groups = await _resolve_second_pass_candidate_groups(llm_client, candidate_groups, identity_summary_map)
+
+    covered_ids = {
+        str(item.get("_item_id") or "")
+        for group in resolved_groups
+        for item in group
+        if str(item.get("_item_id") or "")
+    }
+    resolved_groups.extend(
+        [item]
+        for item in normalized_items
+        if str(item.get("_item_id") or "") not in covered_ids
+    )
+    order_map = {str(item.get("_item_id") or ""): index for index, item in enumerate(normalized_items)}
+    resolved_groups.sort(
+        key=lambda group: min(order_map.get(str(item.get("_item_id") or ""), 10**9) for item in group) if group else 10**9
+    )
+
+    finalized_items = await _finalize_item_groups_async(build_llm(CHARACTER_GROUP_FINALIZE_MODEL), resolved_groups)
+    finalized_items = _merge_same_canonical_character_items(_finalize_character_aliases(finalized_items))
+    return {
+        "candidate_groups": candidate_groups,
+        "identity_summary_map": identity_summary_map,
+        "resolved_groups": resolved_groups,
+        "finalized_items": finalized_items,
+    }
+
+
+def run_second_pass_merge_diagnostic(book_id: int) -> dict[str, Any]:
+    items = _load_active_character_items(int(book_id))
+    return asyncio.run(_run_second_pass_merge_diagnostic_async(int(book_id), items))
+
+
 def _sync_book_characters(cursor: Any, book_id: int, items: list[dict[str, Any]]) -> dict[str, Any]:
     existing_rows = _load_existing_character_rows(book_id)
     existing_by_key = {
@@ -1751,7 +2378,7 @@ def rebuild_characters_table(book_id: int | None = None) -> dict[str, int]:
     items_by_book: dict[int, list[dict[str, Any]]] = {}
     for current_book_id, items in raw_items_by_book.items():
         generic_rewritten_items = _rewrite_generic_character_items(current_book_id, items)
-        rewritten_items = _run_character_rewrite_and_merge(generic_rewritten_items)
+        rewritten_items = _run_character_rewrite_and_merge(current_book_id, generic_rewritten_items)
         finalized_items = _merge_same_canonical_character_items(_finalize_character_aliases(rewritten_items))
         if finalized_items:
             items_by_book[current_book_id] = finalized_items

@@ -41,13 +41,22 @@ _REQUEST_ID_LOCAL = threading.local()
 _METRICS_LOCK = threading.Lock()
 _REQUEST_METRICS: dict[str, dict[str, int]] = {}
 LLM_RATE_LIMIT_MAX_RETRIES_ENV_VAR = "LLM_RATE_LIMIT_MAX_RETRIES"
-LLM_RATE_LIMIT_BASE_DELAY_SECONDS_ENV_VAR = "LLM_RATE_LIMIT_BASE_DELAY_SECONDS"
-LLM_RATE_LIMIT_MAX_DELAY_SECONDS_ENV_VAR = "LLM_RATE_LIMIT_MAX_DELAY_SECONDS"
-LLM_RATE_LIMIT_JITTER_SECONDS_ENV_VAR = "LLM_RATE_LIMIT_JITTER_SECONDS"
+LLM_SDK_MAX_RETRIES_ENV_VAR = "LLM_SDK_MAX_RETRIES"
+LLM_GLOBAL_MAX_CONCURRENCY_ENV_VAR = "LLM_GLOBAL_MAX_CONCURRENCY"
 LLM_TRUST_ENV_PROXY_ENV_VAR = "LLM_TRUST_ENV_PROXY"
-LLM_RATE_LIMIT_PROBE_PROMPT = "仅回复ok"
 _LLM_HTTP_CLIENT: httpx.Client | None = None
 _LLM_HTTP_ASYNC_CLIENT: httpx.AsyncClient | None = None
+_LLM_THROTTLE_LOCK = threading.Lock()
+_LLM_GLOBAL_COOLDOWN_UNTIL_MONOTONIC = 0.0
+_LLM_GLOBAL_COOLDOWN_LEVEL = 0
+_LLM_GLOBAL_SEMAPHORE: threading.BoundedSemaphore | None = None
+_LLM_GLOBAL_SEMAPHORE_LIMIT: int | None = None
+_RATE_LIMIT_DELAY_WINDOWS: tuple[tuple[float, float], ...] = (
+    (3.0, 5.0),
+    (10.0, 15.0),
+    (25.0, 30.0),
+    (45.0, 60.0),
+)
 
 
 def set_active_request_id(request_id: str) -> None:
@@ -155,7 +164,7 @@ def _estimate_output_tokens(response: Any) -> int:
     return _estimate_tokens(text)
 
 
-def _resolve_rate_limit_retry_config() -> tuple[int, float, float, float]:
+def _resolve_rate_limit_max_retries() -> int:
     def _as_int(env_name: str, default: int) -> int:
         raw = str(os.getenv(env_name, "")).strip()
         if not raw:
@@ -165,20 +174,7 @@ def _resolve_rate_limit_retry_config() -> tuple[int, float, float, float]:
         except ValueError:
             return default
 
-    def _as_float(env_name: str, default: float) -> float:
-        raw = str(os.getenv(env_name, "")).strip()
-        if not raw:
-            return default
-        try:
-            return max(0.0, float(raw))
-        except ValueError:
-            return default
-
-    max_retries = _as_int(LLM_RATE_LIMIT_MAX_RETRIES_ENV_VAR, 6)
-    base_delay = max(1.0, _as_float(LLM_RATE_LIMIT_BASE_DELAY_SECONDS_ENV_VAR, 60.0))
-    max_delay = max(base_delay, _as_float(LLM_RATE_LIMIT_MAX_DELAY_SECONDS_ENV_VAR, 1800.0))
-    jitter = _as_float(LLM_RATE_LIMIT_JITTER_SECONDS_ENV_VAR, 0.0)
-    return max_retries, base_delay, max_delay, jitter
+    return _as_int(LLM_RATE_LIMIT_MAX_RETRIES_ENV_VAR, 6)
 
 
 def _is_rate_limit_error(exc: Exception) -> bool:
@@ -203,9 +199,66 @@ def _is_rate_limit_error(exc: Exception) -> bool:
     return False
 
 
+def _resolve_sdk_max_retries() -> int:
+    raw = str(os.getenv(LLM_SDK_MAX_RETRIES_ENV_VAR, "")).strip()
+    if not raw:
+        return 0
+    try:
+        return max(0, int(raw))
+    except ValueError:
+        return 0
+
+
+def _resolve_global_llm_max_concurrency() -> int:
+    raw = str(os.getenv(LLM_GLOBAL_MAX_CONCURRENCY_ENV_VAR, "")).strip()
+    if not raw:
+        return 25
+    try:
+        return max(1, int(raw))
+    except ValueError:
+        return 25
+
+
+def _retry_delay_window(attempt: int) -> tuple[float, float]:
+    normalized = max(0, int(attempt))
+    index = min(normalized, len(_RATE_LIMIT_DELAY_WINDOWS) - 1)
+    return _RATE_LIMIT_DELAY_WINDOWS[index]
+
+
 def _compute_retry_delay(attempt: int, base_delay: float, max_delay: float, jitter: float) -> float:
-    del attempt, base_delay, max_delay, jitter
-    return random.uniform(0.0, 15.0)
+    del base_delay, max_delay, jitter
+    start, end = _retry_delay_window(attempt)
+    return random.uniform(start, end)
+
+
+def _reset_llm_throttle_state_for_tests() -> None:
+    global _LLM_GLOBAL_COOLDOWN_UNTIL_MONOTONIC, _LLM_GLOBAL_COOLDOWN_LEVEL
+    global _LLM_GLOBAL_SEMAPHORE, _LLM_GLOBAL_SEMAPHORE_LIMIT
+    with _LLM_THROTTLE_LOCK:
+        _LLM_GLOBAL_COOLDOWN_UNTIL_MONOTONIC = 0.0
+        _LLM_GLOBAL_COOLDOWN_LEVEL = 0
+        _LLM_GLOBAL_SEMAPHORE = None
+        _LLM_GLOBAL_SEMAPHORE_LIMIT = None
+
+
+def _get_global_cooldown_remaining() -> float:
+    with _LLM_THROTTLE_LOCK:
+        remaining = _LLM_GLOBAL_COOLDOWN_UNTIL_MONOTONIC - time.monotonic()
+    return max(0.0, remaining)
+
+
+def _register_global_rate_limit_cooldown() -> float:
+    global _LLM_GLOBAL_COOLDOWN_UNTIL_MONOTONIC, _LLM_GLOBAL_COOLDOWN_LEVEL
+    with _LLM_THROTTLE_LOCK:
+        now = time.monotonic()
+        if now >= _LLM_GLOBAL_COOLDOWN_UNTIL_MONOTONIC:
+            _LLM_GLOBAL_COOLDOWN_LEVEL = 0
+        start, end = _retry_delay_window(_LLM_GLOBAL_COOLDOWN_LEVEL)
+        cooldown_delay = random.uniform(start, end)
+        _LLM_GLOBAL_COOLDOWN_UNTIL_MONOTONIC = max(_LLM_GLOBAL_COOLDOWN_UNTIL_MONOTONIC, now + cooldown_delay)
+        if _LLM_GLOBAL_COOLDOWN_LEVEL < len(_RATE_LIMIT_DELAY_WINDOWS) - 1:
+            _LLM_GLOBAL_COOLDOWN_LEVEL += 1
+        return max(0.0, _LLM_GLOBAL_COOLDOWN_UNTIL_MONOTONIC - now)
 
 
 def _env_flag_enabled(name: str, default: bool = False) -> bool:
@@ -220,7 +273,56 @@ def _env_flag_enabled(name: str, default: bool = False) -> bool:
     return default
 
 
+def _get_global_llm_semaphore() -> threading.BoundedSemaphore:
+    global _LLM_GLOBAL_SEMAPHORE, _LLM_GLOBAL_SEMAPHORE_LIMIT
+    limit = _resolve_global_llm_max_concurrency()
+    with _LLM_THROTTLE_LOCK:
+        if _LLM_GLOBAL_SEMAPHORE is None or _LLM_GLOBAL_SEMAPHORE_LIMIT != limit:
+            _LLM_GLOBAL_SEMAPHORE = threading.BoundedSemaphore(limit)
+            _LLM_GLOBAL_SEMAPHORE_LIMIT = limit
+        return _LLM_GLOBAL_SEMAPHORE
+
+
+def _wait_for_global_cooldown_sync() -> None:
+    while True:
+        remaining = _get_global_cooldown_remaining()
+        if remaining <= 0:
+            return
+        time.sleep(remaining)
+
+
+async def _wait_for_global_cooldown_async() -> None:
+    while True:
+        remaining = _get_global_cooldown_remaining()
+        if remaining <= 0:
+            return
+        await asyncio.sleep(remaining)
+
+
+def _acquire_global_llm_slot_sync() -> threading.BoundedSemaphore:
+    while True:
+        _wait_for_global_cooldown_sync()
+        semaphore = _get_global_llm_semaphore()
+        semaphore.acquire()
+        remaining = _get_global_cooldown_remaining()
+        if remaining <= 0:
+            return semaphore
+        semaphore.release()
+
+
+async def _acquire_global_llm_slot_async() -> threading.BoundedSemaphore:
+    while True:
+        await _wait_for_global_cooldown_async()
+        semaphore = _get_global_llm_semaphore()
+        await asyncio.to_thread(semaphore.acquire)
+        remaining = _get_global_cooldown_remaining()
+        if remaining <= 0:
+            return semaphore
+        semaphore.release()
+
+
 def apply_llm_network_settings(kwargs: dict[str, Any]) -> dict[str, Any]:
+    kwargs.setdefault("max_retries", _resolve_sdk_max_retries())
     if _env_flag_enabled(LLM_TRUST_ENV_PROXY_ENV_VAR, default=False):
         return kwargs
 
@@ -234,32 +336,6 @@ def apply_llm_network_settings(kwargs: dict[str, Any]) -> dict[str, Any]:
     return kwargs
 
 
-def _probe_runnable_sync(runnable: Any, config: Any = None) -> bool:
-    try:
-        if config is None:
-            runnable.invoke(LLM_RATE_LIMIT_PROBE_PROMPT)
-        else:
-            runnable.invoke(LLM_RATE_LIMIT_PROBE_PROMPT, config=config)
-        return True
-    except Exception as exc:
-        if _is_rate_limit_error(exc):
-            return False
-        raise
-
-
-async def _probe_runnable_async(runnable: Any, config: Any = None) -> bool:
-    try:
-        if config is None:
-            await runnable.ainvoke(LLM_RATE_LIMIT_PROBE_PROMPT)
-        else:
-            await runnable.ainvoke(LLM_RATE_LIMIT_PROBE_PROMPT, config=config)
-        return True
-    except Exception as exc:
-        if _is_rate_limit_error(exc):
-            return False
-        raise
-
-
 class TrackedLLM:
     def __init__(self, runnable: Any):
         self._runnable = runnable
@@ -271,73 +347,73 @@ class TrackedLLM:
     def invoke(self, input: Any, config: Any = None, **kwargs: Any) -> Any:
         request_id = get_active_request_id()
         input_tokens = _estimate_input_tokens(input)
-        max_retries, base_delay, max_delay, jitter = _resolve_rate_limit_retry_config()
+        max_retries = _resolve_rate_limit_max_retries()
         for attempt in range(max_retries + 1):
+            semaphore = _acquire_global_llm_slot_sync()
             try:
-                if config is None:
-                    response = self._runnable.invoke(input, **kwargs)
+                try:
+                    if config is None:
+                        response = self._runnable.invoke(input, **kwargs)
+                    else:
+                        response = self._runnable.invoke(input, config=config, **kwargs)
+                except Exception as exc:
+                    if not _is_rate_limit_error(exc) or attempt >= max_retries:
+                        raise
+                    retry_delay = _compute_retry_delay(attempt, base_delay=0.0, max_delay=0.0, jitter=0.0)
+                    global_delay = _register_global_rate_limit_cooldown()
+                    delay = max(retry_delay, global_delay)
+                    logger.warning(
+                        "[LLM] rate limit encountered invoke attempt=%d/%d delay_sec=%.2f error=%s",
+                        attempt + 1,
+                        max_retries + 1,
+                        delay,
+                        exc,
+                    )
                 else:
-                    response = self._runnable.invoke(input, config=config, **kwargs)
-                output_tokens = _estimate_output_tokens(response)
-                _record_api_usage(request_id, input_tokens, output_tokens)
-                return response
-            except Exception as exc:
-                if not _is_rate_limit_error(exc) or attempt >= max_retries:
-                    raise
-                delay = _compute_retry_delay(attempt, base_delay, max_delay, jitter)
-                logger.warning(
-                    "[LLM] rate limit encountered, wait before probe invoke attempt=%d/%d delay_sec=%.2f error=%s",
-                    attempt + 1,
-                    max_retries + 1,
-                    delay,
-                    exc,
-                )
-                time.sleep(delay)
-                probe_ok = _probe_runnable_sync(self._runnable, config=config)
-                logger.warning(
-                    "[LLM] rate limit probe invoke attempt=%d/%d recovered=%s",
-                    attempt + 1,
-                    max_retries + 1,
-                    probe_ok,
-                )
-                if not probe_ok:
-                    continue
+                    output_tokens = _estimate_output_tokens(response)
+                    _record_api_usage(request_id, input_tokens, output_tokens)
+                    return response
+            except Exception:
+                raise
+            finally:
+                semaphore.release()
+            time.sleep(delay)
         raise RuntimeError("unreachable")
 
     async def ainvoke(self, input: Any, config: Any = None, **kwargs: Any) -> Any:
         request_id = get_active_request_id()
         input_tokens = _estimate_input_tokens(input)
-        max_retries, base_delay, max_delay, jitter = _resolve_rate_limit_retry_config()
+        max_retries = _resolve_rate_limit_max_retries()
         for attempt in range(max_retries + 1):
+            semaphore = await _acquire_global_llm_slot_async()
             try:
-                if config is None:
-                    response = await self._runnable.ainvoke(input, **kwargs)
+                try:
+                    if config is None:
+                        response = await self._runnable.ainvoke(input, **kwargs)
+                    else:
+                        response = await self._runnable.ainvoke(input, config=config, **kwargs)
+                except Exception as exc:
+                    if not _is_rate_limit_error(exc) or attempt >= max_retries:
+                        raise
+                    retry_delay = _compute_retry_delay(attempt, base_delay=0.0, max_delay=0.0, jitter=0.0)
+                    global_delay = _register_global_rate_limit_cooldown()
+                    delay = max(retry_delay, global_delay)
+                    logger.warning(
+                        "[LLM] rate limit encountered ainvoke attempt=%d/%d delay_sec=%.2f error=%s",
+                        attempt + 1,
+                        max_retries + 1,
+                        delay,
+                        exc,
+                    )
                 else:
-                    response = await self._runnable.ainvoke(input, config=config, **kwargs)
-                output_tokens = _estimate_output_tokens(response)
-                _record_api_usage(request_id, input_tokens, output_tokens)
-                return response
-            except Exception as exc:
-                if not _is_rate_limit_error(exc) or attempt >= max_retries:
-                    raise
-                delay = _compute_retry_delay(attempt, base_delay, max_delay, jitter)
-                logger.warning(
-                    "[LLM] rate limit encountered, wait before probe ainvoke attempt=%d/%d delay_sec=%.2f error=%s",
-                    attempt + 1,
-                    max_retries + 1,
-                    delay,
-                    exc,
-                )
-                await asyncio.sleep(delay)
-                probe_ok = await _probe_runnable_async(self._runnable, config=config)
-                logger.warning(
-                    "[LLM] rate limit probe ainvoke attempt=%d/%d recovered=%s",
-                    attempt + 1,
-                    max_retries + 1,
-                    probe_ok,
-                )
-                if not probe_ok:
-                    continue
+                    output_tokens = _estimate_output_tokens(response)
+                    _record_api_usage(request_id, input_tokens, output_tokens)
+                    return response
+            except Exception:
+                raise
+            finally:
+                semaphore.release()
+            await asyncio.sleep(delay)
         raise RuntimeError("unreachable")
 
     def __getattr__(self, name: str) -> Any:
