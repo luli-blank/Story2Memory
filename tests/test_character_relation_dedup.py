@@ -10,7 +10,7 @@ def test_group_relation_events_merges_same_target_name_even_if_id_missing():
     events = [
         {
             "target_character_id": 1,
-            "target_character_name": "诺诺",
+            "target_character_name": "林夏",
             "relation_type": "ally",
             "polarity": "positive",
             "strength": "high",
@@ -22,7 +22,7 @@ def test_group_relation_events_merges_same_target_name_even_if_id_missing():
         },
         {
             "target_character_id": None,
-            "target_character_name": "诺诺",
+            "target_character_name": "林夏",
             "relation_type": "ally",
             "polarity": "positive",
             "strength": "high",
@@ -37,7 +37,7 @@ def test_group_relation_events_merges_same_target_name_even_if_id_missing():
     grouped = _group_relation_events(events)
 
     assert len(grouped) == 1
-    assert grouped[0]["target_character_name"] == "诺诺"
+    assert grouped[0]["target_character_name"] == "林夏"
     assert grouped[0]["target_character_id"] == 1
     assert grouped[0]["first_chapter_index"] == 12
     assert grouped[0]["last_chapter_index"] == 24
@@ -61,11 +61,11 @@ def test_save_relations_dedupes_same_target_name_before_insert():
             raise AssertionError(f"Unexpected SQL: {statement}")
 
     cursor = FakeCursor()
-    character_row = {"id": 1, "name": "路明非"}
+    character_row = {"id": 1, "name": "赵明"}
     relations = [
         {
             "target_character_id": 7,
-            "target_character_name": "诺诺",
+            "target_character_name": "林夏",
             "summary": "建立稳定信任。",
             "structural_relation": ["同伴"],
             "action_relation": ["并肩行动"],
@@ -90,7 +90,7 @@ def test_save_relations_dedupes_same_target_name_before_insert():
         },
         {
             "target_character_id": None,
-            "target_character_name": "诺诺",
+            "target_character_name": "林夏",
             "summary": "继续保持信任。",
             "structural_relation": ["同伴"],
             "action_relation": ["互相支援"],
@@ -123,4 +123,4 @@ def test_save_relations_dedupes_same_target_name_before_insert():
     assert inserted[0] == 1
     assert inserted[1] == 1
     assert inserted[3] == 7
-    assert inserted[4] == "诺诺"
+    assert inserted[4] == "林夏"

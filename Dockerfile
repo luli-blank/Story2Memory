@@ -1,4 +1,4 @@
-FROM oven/bun:1.1.29 AS bun
+FROM oven/bun:1.3.0 AS bun
 
 FROM python:3.13-slim
 
@@ -17,7 +17,7 @@ RUN apt-get update \
 COPY --from=bun /usr/local/bin/bun /usr/local/bin/bun
 
 COPY requirements.txt /app/requirements.txt
-RUN pip install -r /app/requirements.txt && pip install reflex
+RUN pip install -r /app/requirements.txt
 
 COPY . /app
 RUN chmod +x /app/scripts/docker_app_entrypoint.sh

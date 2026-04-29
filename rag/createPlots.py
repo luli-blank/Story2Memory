@@ -12,6 +12,7 @@ from typing import Any
 from urllib.parse import unquote, urlparse
 
 from agent.graph import build_llm
+from core.public_runtime import require_runtime_llm_model
 from dotenv import load_dotenv
 import pymysql
 import pydantic
@@ -27,8 +28,14 @@ _STEP_RETRY_TIMERS: dict[tuple[str, int, int], threading.Timer] = {}
 _STEP2_RETRY_EXECUTION_LOCK = threading.Lock()
 PLOT_JSON_PARSE_PRIMARY_ATTEMPTS = 3
 PLOT_JSON_PARSE_FALLBACK_ATTEMPTS = 2
-PLOT_JSON_PARSE_FALLBACK_MODEL = "deepseek-v3.2"
-PLOT_MANUAL_ERROR_RETRY_MODEL = "deepseek-v3.2"
+
+
+def _plot_json_parse_fallback_model() -> str:
+    return str(os.getenv("PLOT_JSON_PARSE_FALLBACK_MODEL", "")).strip() or require_runtime_llm_model()
+
+
+def _plot_manual_error_retry_model() -> str:
+    return str(os.getenv("PLOT_MANUAL_ERROR_RETRY_MODEL", "")).strip() or require_runtime_llm_model()
 
 
 def _progress_bar(current: int, total: int, width: int = 24) -> str:
@@ -313,7 +320,7 @@ class PlotRecordBuilder:
 
     def _get_fallback_llm_client(self):
         if self._fallback_llm_client is None:
-            self._fallback_llm_client = build_llm(self._fallback_model_override or PLOT_JSON_PARSE_FALLBACK_MODEL)
+            self._fallback_llm_client = build_llm(self._fallback_model_override or _plot_json_parse_fallback_model())
         return self._fallback_llm_client
 
     def _backfill_plot_step_statuses(self, book_id: int) -> None:
@@ -404,8 +411,8 @@ class PlotRecordBuilder:
                 retry_builder = PlotRecordBuilder(
                     max_concurrency=self.max_concurrency,
                     max_parse_retries=self.max_parse_retries,
-                    primary_model_override=PLOT_MANUAL_ERROR_RETRY_MODEL,
-                    fallback_model_override=PLOT_MANUAL_ERROR_RETRY_MODEL,
+                    primary_model_override=_plot_manual_error_retry_model(),
+                    fallback_model_override=_plot_manual_error_retry_model(),
                 )
                 updated = retry_builder.retry_step2_for_plot(book_id, plot_id, background=False)
             except Exception:
@@ -443,8 +450,8 @@ class PlotRecordBuilder:
                 retry_builder = PlotRecordBuilder(
                     max_concurrency=self.max_concurrency,
                     max_parse_retries=self.max_parse_retries,
-                    primary_model_override=PLOT_MANUAL_ERROR_RETRY_MODEL,
-                    fallback_model_override=PLOT_MANUAL_ERROR_RETRY_MODEL,
+                    primary_model_override=_plot_manual_error_retry_model(),
+                    fallback_model_override=_plot_manual_error_retry_model(),
                 )
                 updated = retry_builder.retry_step1_for_plot(book_id, plot_id, background=False)
             except Exception:
@@ -865,7 +872,7 @@ class PlotRecordBuilder:
                         "[分析进度][情节摘要LLM-%s][plot_id=%s] 针对异常响应重试本次API调用... model=%s",
                         step_label,
                         plot_id,
-                        PLOT_JSON_PARSE_FALLBACK_MODEL
+                        _plot_json_parse_fallback_model()
                         if attempt_index == PLOT_JSON_PARSE_PRIMARY_ATTEMPTS
                         else model_label,
                     )
@@ -899,7 +906,7 @@ class PlotRecordBuilder:
                     plot_id,
                     batch_label,
                     batch_index,
-                    PLOT_MANUAL_ERROR_RETRY_MODEL,
+                    _plot_manual_error_retry_model(),
                     exc,
                     raw_preview,
                 )
@@ -933,7 +940,7 @@ class PlotRecordBuilder:
             "[分析进度][情节摘要LLM-%s重跑][plot_id=%s] 使用 %s 并发 3 次重试。",
             step_label,
             plot_id,
-            PLOT_MANUAL_ERROR_RETRY_MODEL,
+            _plot_manual_error_retry_model(),
         )
         parsed, error = await _run_batch(3, "batch3")
         if parsed is not None:

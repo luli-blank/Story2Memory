@@ -1,0 +1,20 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="720" viewBox="0 0 1200 720">
+  <rect width="1200" height="720" rx="34" fill="#0b1726"/>
+  <text x="64" y="84" fill="#f3f7ff" font-family="Avenir Next, Helvetica, sans-serif" font-size="42" font-weight="700">Emotional Timeline</text>
+  <g font-family="Avenir Next, Helvetica, sans-serif">
+    <rect x="76" y="146" width="1048" height="452" rx="30" fill="#101f32" stroke="#31445e"/>
+    <line x1="150" y1="476" x2="1040" y2="476" stroke="#3b536f" stroke-width="4"/>
+    <polyline points="150,420 280,380 410,300 540,330 670,252 800,290 930,190 1040,230" fill="none" stroke="#55b6ff" stroke-width="8" stroke-linecap="round" stroke-linejoin="round"/>
+    <g fill="#55b6ff">
+      <circle cx="150" cy="420" r="12"/>
+      <circle cx="410" cy="300" r="12"/>
+      <circle cx="670" cy="252" r="12"/>
+      <circle cx="930" cy="190" r="12"/>
+    </g>
+    <text x="150" y="528" fill="#9fb2cc" font-size="22">chapter 1</text>
+    <text x="392" y="528" fill="#9fb2cc" font-size="22">chapter 8</text>
+    <text x="650" y="528" fill="#9fb2cc" font-size="22">chapter 16</text>
+    <text x="900" y="528" fill="#9fb2cc" font-size="22">chapter 24</text>
+    <text x="150" y="210" fill="#f3f7ff" font-size="24">Trust and conflict are tracked as the story evolves.</text>
+  </g>
+</svg>

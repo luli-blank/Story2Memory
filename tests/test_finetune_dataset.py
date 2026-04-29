@@ -27,32 +27,32 @@ def test_normalize_chapter_summary_prefers_raw_summary_json():
 def test_build_raw_and_messages_training_record_include_multilevel_context():
     raw_record = build_raw_training_record(
         split="train",
-        book_row={"book_id": 7, "book_title": "龙族", "author": "江南"},
+        book_row={"book_id": 7, "book_title": "镜海纪事", "author": "匿名作者"},
         chapter_row={
             "chapter_index": 12,
             "chapter_title": "第12章 雨夜高架桥",
             "content": "正文内容",
             "word_count": 1234,
             "raw_summary_json": {
-                "chapter_summary": "路明非在雨夜抵达高架桥，危机逼近。",
-                "character": [{"name": "路明非", "description": "在桥上直面危机。"}],
-                "organizations": [{"name": "卡塞尔学院", "description": "远程介入当前局势。"}],
+                "chapter_summary": "赵明在雨夜抵达高架桥，危机逼近。",
+                "character": [{"name": "赵明", "description": "在桥上直面危机。"}],
+                "organizations": [{"name": "星桥学院", "description": "远程介入当前局势。"}],
             },
         },
         plot_row={"plot_summary": "主角进入关键危机场景。"},
-        volume_row={"volume_summary": "主角逐步进入龙族世界。"},
+        volume_row={"volume_summary": "主角逐步进入镜海纪事世界。"},
         previous_text_tail="前文尾巴",
     )
 
     assert raw_record["sample_id"] == "7:12"
-    assert raw_record["conditioning"]["volume_summary"] == "主角逐步进入龙族世界。"
-    assert raw_record["conditioning"]["chapter_summary"] == "路明非在雨夜抵达高架桥，危机逼近。"
+    assert raw_record["conditioning"]["volume_summary"] == "主角逐步进入镜海纪事世界。"
+    assert raw_record["conditioning"]["chapter_summary"] == "赵明在雨夜抵达高架桥，危机逼近。"
     assert "前文尾巴" in raw_record["instruction"]
 
     messages_record = build_messages_training_record(raw_record)
     assert len(messages_record["messages"]) == 3
     assert messages_record["messages"][1]["role"] == "user"
-    assert "章节摘要：路明非在雨夜抵达高架桥" in messages_record["messages"][1]["content"]
+    assert "章节摘要：赵明在雨夜抵达高架桥" in messages_record["messages"][1]["content"]
     assert "角色信息" not in messages_record["messages"][1]["content"]
     assert messages_record["messages"][2]["content"] == "正文内容"
 

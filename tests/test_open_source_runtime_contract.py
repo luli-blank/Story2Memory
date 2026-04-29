@@ -32,9 +32,22 @@ def test_public_repo_tracks_no_copyrighted_sample_assets():
         if path == "data/.DS_Store"
         or path.startswith("data/book/")
         or path.startswith("data/picture/")
+        or path.startswith("output/")
         or path.endswith(".epub")
+        or path.endswith(".jsonl")
     ]
     assert forbidden == []
+
+
+def test_public_repo_tracks_no_private_remote_helpers():
+    forbidden = {
+        "scripts/open_remote_db_tunnel.sh",
+        "scripts/prepare_remote_db_env.sh",
+        "scripts/remote_reset_init.sh",
+        "temp_retrieval_benchmark.py",
+    }
+    tracked = set(_tracked_files())
+    assert tracked.isdisjoint(forbidden)
 
 
 def test_gitignore_blocks_local_private_state_for_public_repo():
@@ -51,6 +64,7 @@ def test_gitignore_blocks_local_private_state_for_public_repo():
         "data/picture/",
         "data/config/",
         "data/logs/",
+        "output/",
     ]:
         assert token in content, f"missing ignore rule: {token}"
 
@@ -63,7 +77,10 @@ def test_dockerignore_blocks_local_state_and_private_inputs():
         ".web/",
         ".states/",
         ".worktrees/",
+        "output/",
         "uploaded_files/",
+        "data/book/",
+        "data/picture/",
         "data/config/",
         "data/logs/",
         "*.db",
@@ -80,15 +97,23 @@ def test_env_example_declares_public_safe_defaults():
         "APP_BACKEND_PORT=8000",
         "MYSQL_ROOT_PASSWORD=change-me-mysql-root-password",
         "MYSQL_PASSWORD=change-me-story2memory-db-password",
+        "MYSQL_HOST=mysql",
+        "MYSQL_PORT=3306",
         "NEO4J_PASSWORD=change-me-neo4j-password",
-        "LLM_API_KEY=your-llm-api-key",
-        "LLM_BASE_URL=https://your-llm-base-url",
-        "LLM_MODEL=your-llm-model",
+        "ARK_API_KEY=your-ark-api-key",
+        "LLM_API_KEY=your-ark-api-key",
+        "LLM_BASE_URL=https://ark.cn-beijing.volces.com/api/coding/v3",
+        "LLM_MODEL=your-coding-plan-llm-model",
+        "EMBED_API_KEY=your-ark-api-key",
+        "EMBED_BASE_URL=https://ark.cn-beijing.volces.com/api/v3",
+        "EMBED_MODEL=your-embedding-endpoint-id",
         "AGENT_RUNTIME_PREWARM_ENABLED=0",
-        "HYBRID_DENSE_RETRIEVAL_ENABLED=0",
-        "RERANK_PROVIDER=local",
-        "RERANK_DISABLED=1",
-        "RERANK_BASE_URL=http://rerank-local:8000/rerank",
+        "HYBRID_DENSE_RETRIEVAL_ENABLED=1",
+        "RERANK_PROVIDER=qwen",
+        "RERANK_DISABLED=0",
+        "RERANK_API_KEY=your-rerank-api-key",
+        "RERANK_BASE_URL=https://dashscope.aliyuncs.com/compatible-api/v1/reranks",
+        "RERANK_MODEL=qwen3-rerank",
         "MYSQL_DSN=mysql+pymysql://story2memory:change-me-story2memory-db-password@mysql:3306/novel_cognition",
     ]
     for line in required_lines:
@@ -104,13 +129,19 @@ def test_app_container_files_define_public_reflex_runtime():
     compose_content = _read("docker-compose.yml")
 
     assert "FROM python:3.13-slim" in docker_content
-    assert "FROM oven/bun:1.1.29" in docker_content
+    assert "FROM oven/bun:1.3.0" in docker_content
     assert "COPY --from=bun /usr/local/bin/bun /usr/local/bin/bun" in docker_content
+    assert "pip install reflex" not in docker_content
     assert 'CMD ["/app/scripts/docker_app_entrypoint.sh"]' in docker_content
     assert "python -m core.public_runtime" in entrypoint_content
-    assert "reflex run --env prod" in entrypoint_content
+    assert "reflex run \\" in entrypoint_content
+    assert "--env prod \\" in entrypoint_content
+    assert "--single-port \\" in entrypoint_content
     assert "${STORY2MEMORY_ENV_FILE:-.env}" in compose_content
     assert "STORY2MEMORY_ENV_OVERRIDE: /app/data/config/runtime.env" in compose_content
+    assert ":latest" not in compose_content
+    assert "web-search:" not in compose_content
+    assert "qdrant/qdrant:latest" not in compose_content
 
 
 def test_app_container_persists_uploaded_books_and_covers():
@@ -129,7 +160,7 @@ def test_docker_compose_binds_only_public_app_ports_to_loopback():
     compose = _read("docker-compose.yml")
     assert '"127.0.0.1:13306:3306"' in compose
     assert '"127.0.0.1:${APP_FRONTEND_PORT:-3000}:3000"' in compose
-    assert '"127.0.0.1:${APP_BACKEND_PORT:-8000}:8000"' in compose
+    assert '"127.0.0.1:${APP_BACKEND_PORT:-8000}:3000"' in compose
     for token in [
         "${REDIS_HOST_PORT",
         "${WEB_SEARCH_HOST_PORT",
@@ -170,8 +201,24 @@ def test_readme_documents_public_open_source_contract():
         "127.0.0.1:8000",
         "默认仅本机访问",
         "AGENT_RUNTIME_PREWARM_ENABLED=0",
+        "自动生成 `MYSQL_DSN`",
+        "`output/` 数据集与实验产物",
     ]:
         assert phrase in content, f"missing README phrase: {phrase}"
+
+
+def test_public_docs_do_not_reference_private_training_corpus():
+    forbidden_tokens = [
+        "\u9f99\u65cf",
+        "\u6c5f\u5357",
+        "\u8def\u660e\u975e",
+        "\u4e0a\u6749\u7ed8\u68a8\u8863",
+        "\u6e90\u7a1a\u751f",
+    ]
+    for path in ["README.md", "docs/training_experiment_guide.md", "docs/finetune_dataset.md"]:
+        content = _read(path)
+        for token in forbidden_tokens:
+            assert token not in content, f"public doc {path} references private corpus token: {token}"
 
 
 def test_public_ci_workflow_runs_pytest_and_compose_smoke():

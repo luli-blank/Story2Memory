@@ -48,7 +48,7 @@ def test_aggregate_roleplay_relation_candidates_keeps_medium_and_fine_signals():
             {
                 "emotional_relation_candidates": [
                     {
-                        "target_character": "杨间",
+                        "target_character": "顾远",
                         "primary_relation_type": "朋友/兄弟",
                         "emotional_signals": ["信任", "依赖", "隐性爱慕"],
                         "interaction_signals": ["特殊关注", "主动联系"],
@@ -58,7 +58,7 @@ def test_aggregate_roleplay_relation_candidates_keeps_medium_and_fine_signals():
                         "chapter_start": 10,
                         "chapter_end": 18,
                         "evidence_chapters": [12],
-                        "summary": "对杨间高度信任。",
+                        "summary": "对顾远高度信任。",
                     },
                     {
                         "target_character": "路人甲",
@@ -78,7 +78,7 @@ def test_aggregate_roleplay_relation_candidates_keeps_medium_and_fine_signals():
             {
                 "emotional_relation_candidates": [
                     {
-                        "target_character": "杨间",
+                        "target_character": "顾远",
                         "primary_relation_type": "爱慕/暧昧/恋爱",
                         "emotional_signals": ["牵挂", "隐性爱慕"],
                         "interaction_signals": ["区别对待"],
@@ -88,7 +88,7 @@ def test_aggregate_roleplay_relation_candidates_keeps_medium_and_fine_signals():
                         "chapter_start": 22,
                         "chapter_end": 30,
                         "evidence_chapters": [24],
-                        "summary": "继续信任杨间。",
+                        "summary": "继续信任顾远。",
                     }
                 ]
             },
@@ -96,7 +96,7 @@ def test_aggregate_roleplay_relation_candidates_keeps_medium_and_fine_signals():
     )
 
     assert len(aggregated) == 1
-    assert aggregated[0]["target_character_name"] == "杨间"
+    assert aggregated[0]["target_character_name"] == "顾远"
     assert len(aggregated[0]["candidates"]) == 2
     assert aggregated[0]["candidates"][0]["primary_relation_type"] == "朋友/兄弟"
     assert aggregated[0]["candidates"][1]["primary_relation_type"] == "爱慕/暧昧/恋爱"
@@ -110,8 +110,8 @@ def test_normalize_character_profile_parses_roleplay_fields():
             "style_samples": [{"scene": "被催促时", "quote": "我马上去。"}],
             "emotional_relations": [
                 {
-                    "target_character": "杨间",
-                    "relation_summary": "对杨间高度信任。",
+                    "target_character": "顾远",
+                    "relation_summary": "对顾远高度信任。",
                     "primary_relation_type": "朋友/兄弟",
                     "secondary_emotional_tendencies": ["隐性爱慕"],
                     "intensity": "strong",
@@ -133,7 +133,7 @@ def test_normalize_character_profile_parses_roleplay_fields():
     assert profile.style_samples[0].scene == "被催促时"
     assert profile.style_samples[0].quote == "我马上去。"
     assert len(profile.emotional_relations) == 1
-    assert profile.emotional_relations[0].target_character_name == "杨间"
+    assert profile.emotional_relations[0].target_character_name == "顾远"
     assert profile.emotional_relations[0].primary_relation_type == "朋友/兄弟"
     assert profile.emotional_relations[0].secondary_emotional_tendencies == ["隐性爱慕"]
     assert profile.emotional_relations[0].timeline[0].summary == "建立信任"
@@ -153,7 +153,7 @@ def test_roleplay_relation_prompts_are_neutral_in_tone():
 def test_roleplay_context_payload_avoids_hardcoding_romance_label():
     state = NovelState()
     state.current_book_id = 1
-    state.current_novel = "神秘复苏"
+    state.current_novel = "示例小说"
     state.current_character_id = 1550
     state.current_character_name = "刘小雨"
     state.current_character_profile = NovelState._normalize_character_profile(
@@ -162,7 +162,7 @@ def test_roleplay_context_payload_avoids_hardcoding_romance_label():
             "speech_style": ["说话直接"],
             "emotional_relations": [
                 {
-                    "target_character": "杨间",
+                    "target_character": "顾远",
                     "relation_summary": "长期特殊关注并保持信任，关系边界复杂。",
                     "primary_relation_type": "爱慕/暧昧/恋爱",
                     "secondary_emotional_tendencies": ["信任", "牵挂"],
@@ -175,7 +175,7 @@ def test_roleplay_context_payload_avoids_hardcoding_romance_label():
     )
 
     payload = state._build_roleplay_context_payload()
-    assert "杨间" in payload["persona_summary"]
+    assert "顾远" in payload["persona_summary"]
     assert "爱慕/暧昧/恋爱" not in payload["persona_summary"]
     assert "未明确确认私人关系" in payload["persona_summary"]
 
@@ -183,9 +183,9 @@ def test_roleplay_context_payload_avoids_hardcoding_romance_label():
 def test_open_character_detail_refreshes_roleplay_greeting_after_snapshot(monkeypatch):
     state = NovelState()
     state.current_book_id = 1
-    state.current_novel = "龙族V·悼亡者的归来 网络连载版"
+    state.current_novel = "示例小说"
     state.current_character_id = 100
-    state.current_character_name = "路明非"
+    state.current_character_name = "赵明"
     state.chat_mode = "roleplay"
     state.chat_messages = state._roleplay_chat_messages()
 
@@ -195,8 +195,8 @@ def test_open_character_detail_refreshes_roleplay_greeting_after_snapshot(monkey
         return {
             "character": {
                 "id": 200,
-                "name": "诺诺",
-                "alias_preview": ["陈墨瞳"],
+                "name": "林夏",
+                "alias_preview": ["林夏旧名"],
                 "record_count": 88,
                 "first_chapter_index": 3,
                 "last_chapter_index": 232,
@@ -218,7 +218,7 @@ def test_open_character_detail_refreshes_roleplay_greeting_after_snapshot(monkey
 
     asyncio.run(run_open_character_detail())
 
-    assert state.current_character_name == "诺诺"
+    assert state.current_character_name == "林夏"
     assert len(state.chat_messages) == 1
-    assert "《诺诺》" in state.chat_messages[0].content
-    assert "《路明非》" not in state.chat_messages[0].content
+    assert "《林夏》" in state.chat_messages[0].content
+    assert "《赵明》" not in state.chat_messages[0].content

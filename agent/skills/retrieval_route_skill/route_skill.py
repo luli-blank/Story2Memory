@@ -14,6 +14,7 @@ from langchain_core.messages import HumanMessage, SystemMessage
 from langchain_openai import ChatOpenAI
 
 from agent.graph import apply_llm_network_settings, wrap_tracked_llm
+from core.public_runtime import require_runtime_llm_model, resolve_runtime_llm_base_url
 
 try:
     from agent.prompt import ROUTE_SKILL_PATH_MAPPING_PROMPT
@@ -218,7 +219,7 @@ COMMON_STOPWORDS = {
     "里",
     "请问",
     "小说",
-    "神秘复苏",
+    "示例小说",
 }
 
 ORGANIZATION_MARKERS = ("组织", "势力", "阵营", "团队", "俱乐部", "国王组织")
@@ -300,12 +301,11 @@ def _build_route_llm() -> Any | None:
 
     model_name = (
         os.getenv("ROUTE_SKILL_MODEL", "").strip()
-        or os.getenv("LLM_MODEL", "deepseek-v3.2").strip()
-        or "deepseek-v3.2"
+        or require_runtime_llm_model()
     )
     base_url = (
         os.getenv("ROUTE_SKILL_BASE_URL", "").strip()
-        or os.getenv("LLM_BASE_URL", "").strip()
+        or resolve_runtime_llm_base_url()
     )
     timeout = float(os.getenv("ROUTE_SKILL_TIMEOUT_SECONDS", "25").strip() or 25.0)
 

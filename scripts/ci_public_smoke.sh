@@ -31,12 +31,12 @@ replacements = {
     "MYSQL_PASSWORD=change-me-story2memory-db-password": "MYSQL_PASSWORD=ci-story2memory-db-secret",
     "MYSQL_DSN=mysql+pymysql://story2memory:change-me-story2memory-db-password@mysql:3306/novel_cognition": "MYSQL_DSN=mysql+pymysql://story2memory:ci-story2memory-db-secret@mysql:3306/novel_cognition",
     "NEO4J_PASSWORD=change-me-neo4j-password": "NEO4J_PASSWORD=ci-neo4j-secret",
-    "LLM_API_KEY=your-llm-api-key": "LLM_API_KEY=fake-key",
-    "LLM_BASE_URL=https://your-llm-base-url": "LLM_BASE_URL=https://example.invalid/v1",
-    "LLM_MODEL=your-llm-model": "LLM_MODEL=fake-model",
-    "EMBED_API_KEY=your-embedding-api-key": "EMBED_API_KEY=fake-embed-key",
-    "EMBED_BASE_URL=https://your-embedding-base-url": "EMBED_BASE_URL=https://example.invalid/embed",
-    "EMBED_MODEL=your-embedding-model": "EMBED_MODEL=fake-embed-model",
+    "ARK_API_KEY=your-ark-api-key": "ARK_API_KEY=fake-ark-key",
+    "LLM_API_KEY=your-ark-api-key": "LLM_API_KEY=fake-ark-key",
+    "LLM_MODEL=your-coding-plan-llm-model": "LLM_MODEL=fake-llm-model",
+    "EMBED_API_KEY=your-ark-api-key": "EMBED_API_KEY=fake-ark-key",
+    "EMBED_MODEL=your-embedding-endpoint-id": "EMBED_MODEL=fake-embed-model",
+    "RERANK_API_KEY=your-rerank-api-key": "RERANK_API_KEY=fake-rerank-key",
 }
 for old, new in replacements.items():
     target = target.replace(old, new)

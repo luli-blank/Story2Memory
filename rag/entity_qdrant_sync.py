@@ -15,6 +15,7 @@ from dotenv import load_dotenv
 import httpx
 import pymysql
 
+from core.public_runtime import require_runtime_embed_model
 
 ROOT_DIR = Path(__file__).resolve().parents[1]
 if str(ROOT_DIR) not in sys.path:
@@ -31,7 +32,6 @@ ENTITY_COLLECTIONS = (
     "world_rules",
 )
 SPLIT_RECORD_COLLECTIONS = {"characters", "origanizations"}
-ENTITY_EMBED_MODEL = "ep-20260303004802-tlt8f"
 ENTITY_EMBED_MULTIMODAL_MAX_CONCURRENCY = 100
 ENTITY_EMBED_MAX_RETRIES = 6
 ENTITY_EMBED_BASE_DELAY_SECONDS = 2.0
@@ -187,7 +187,7 @@ def _build_embedding_name_text(name: str, aliases: list[str]) -> str:
 def _build_embedding_hash(text: str) -> str:
     normalized = _clean_text(text)
     digest = hashlib.sha256()
-    digest.update(ENTITY_EMBED_MODEL.encode("utf-8"))
+    digest.update(require_runtime_embed_model().encode("utf-8"))
     digest.update(b"\n")
     digest.update(normalized.encode("utf-8"))
     return digest.hexdigest()
@@ -386,7 +386,7 @@ def _delete_stale_points(collection_name: str, desired_ids: set[int], book_id: i
 @lru_cache(maxsize=1)
 def _get_entity_embedding_client() -> OpenAIEmbeddingClient:
     client = OpenAIEmbeddingClient()
-    client.model = ENTITY_EMBED_MODEL
+    client.model = require_runtime_embed_model()
     return client
 
 

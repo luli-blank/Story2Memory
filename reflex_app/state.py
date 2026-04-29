@@ -20,7 +20,9 @@ from core.public_runtime import (
     build_startup_settings,
     get_runtime_override_path,
     is_agent_runtime_prewarm_enabled,
-    request_runtime_restart,
+    probe_startup_services,
+    refresh_runtime_clients,
+    test_startup_settings,
     validate_startup_settings,
     write_startup_settings,
 )
@@ -371,6 +373,14 @@ class RelationGraphCanvasEdgeView(pydantic.BaseModel):
     color: str = "rgba(125,211,252,0.45)"
 
 
+class StartupServiceStatus(pydantic.BaseModel):
+    key: str = ""
+    label: str = ""
+    status: str = "starting"
+    detail: str = ""
+    blocking: bool = True
+
+
 class NovelState(rx.State):
     default_books: list[Book] = []
     uploaded_books: list[Book] = []
@@ -382,19 +392,22 @@ class NovelState(rx.State):
     startup_feedback: str = ""
     startup_feedback_is_error: bool = False
     startup_last_saved_at: str = ""
-    setup_llm_api_key: str = ""
-    setup_llm_base_url: str = ""
+    startup_services_loading: bool = False
+    startup_test_running: bool = False
+    startup_apply_running: bool = False
+    startup_test_passed: bool = False
+    startup_last_test_signature: str = ""
+    startup_service_statuses: list[StartupServiceStatus] = []
+    setup_ark_api_key: str = ""
     setup_llm_model: str = ""
-    setup_vector_retrieval_enabled: bool = False
-    setup_embed_api_key: str = ""
-    setup_embed_base_url: str = ""
+    setup_vector_retrieval_enabled: bool = True
     setup_embed_model: str = ""
-    setup_qdrant_url: str = "http://qdrant:6333"
-    setup_rerank_enabled: bool = False
-    setup_rerank_provider: str = "local"
-    setup_rerank_base_url: str = "http://rerank-local:8000/rerank"
+    setup_rerank_enabled: bool = True
+    setup_rerank_provider: str = "qwen"
+    setup_rerank_base_url: str = "https://dashscope.aliyuncs.com/compatible-api/v1/reranks"
     setup_rerank_api_key: str = ""
-    setup_rerank_model: str = "BAAI/bge-reranker-v2-m3"
+    setup_rerank_model: str = "qwen3-rerank"
+    setup_rerank_instruction: str = "Given a web search query, retrieve relevant passages that answer the query."
     setup_prewarm_enabled: bool = False
     chat_mode: str = "qa"
     chat_input: str = ""
@@ -541,28 +554,77 @@ class NovelState(rx.State):
         return validate_startup_settings(self._startup_settings_payload())
 
     @rx.var
+    def startup_test_is_fresh(self) -> bool:
+        return bool(self.startup_test_passed) and (
+            self.startup_last_test_signature == self._startup_settings_signature()
+        )
+
+    @rx.var
+    def startup_has_blocking_service_failures(self) -> bool:
+        for item in self.startup_service_statuses:
+            if not self._startup_service_is_blocking(item):
+                continue
+            if str(item.status or "starting") != "ready":
+                return True
+        return False
+
+    @rx.var
     def startup_status_label(self) -> str:
         if self.startup_validation_errors:
-            return "未完成配置"
-        if self.setup_vector_retrieval_enabled or self.setup_rerank_enabled:
-            return "高级检索已启用"
-        return "基础可用"
+            return "待补全 Ark 配置"
+        if self.startup_apply_running:
+            return "正在应用配置"
+        if self.startup_test_running:
+            return "正在测试"
+        if self.startup_test_is_fresh:
+            return "可进入书架"
+        if self.startup_has_blocking_service_failures:
+            return "等待服务启动"
+        return "待测试"
 
     @rx.var
     def startup_status_accent(self) -> str:
         if self.startup_validation_errors:
             return "#fda4af"
-        if self.setup_vector_retrieval_enabled or self.setup_rerank_enabled:
+        if self.startup_has_blocking_service_failures:
+            return "#fbbf24"
+        if self.startup_test_is_fresh:
+            return "#86efac"
+        if self.startup_apply_running or self.startup_test_running:
             return "#67e8f9"
-        return "#86efac"
+        return "#cbd5e1"
 
     @rx.var
-    def startup_save_button_text(self) -> str:
-        return "保存配置"
+    def startup_refresh_button_text(self) -> str:
+        return "刷新中..." if self.startup_services_loading else "刷新状态"
 
     @rx.var
-    def startup_apply_button_disabled(self) -> bool:
-        return bool(self.startup_validation_errors)
+    def startup_test_button_text(self) -> str:
+        return "测试中..." if self.startup_test_running else "测试配置"
+
+    @rx.var
+    def startup_begin_button_text(self) -> str:
+        return "应用中..." if self.startup_apply_running else "开始使用"
+
+    @rx.var
+    def startup_test_button_disabled(self) -> bool:
+        return (
+            self.startup_services_loading
+            or self.startup_test_running
+            or self.startup_apply_running
+            or bool(self.startup_validation_errors)
+            or self.startup_has_blocking_service_failures
+        )
+
+    @rx.var
+    def startup_begin_button_disabled(self) -> bool:
+        return (
+            self.startup_services_loading
+            or self.startup_test_running
+            or self.startup_apply_running
+            or (not self.startup_test_is_fresh)
+            or self.startup_has_blocking_service_failures
+        )
 
     @rx.var
     def startup_runtime_path_label(self) -> str:
@@ -570,53 +632,140 @@ class NovelState(rx.State):
 
     def _startup_settings_payload(self) -> dict[str, Any]:
         return {
-            "llm_api_key": self.setup_llm_api_key,
-            "llm_base_url": self.setup_llm_base_url,
+            "ark_api_key": self.setup_ark_api_key,
             "llm_model": self.setup_llm_model,
-            "vector_retrieval_enabled": bool(self.setup_vector_retrieval_enabled),
-            "embed_api_key": self.setup_embed_api_key,
-            "embed_base_url": self.setup_embed_base_url,
+            "vector_retrieval_enabled": True,
             "embed_model": self.setup_embed_model,
-            "qdrant_url": self.setup_qdrant_url,
-            "rerank_enabled": bool(self.setup_rerank_enabled),
+            "rerank_enabled": True,
             "rerank_provider": self.setup_rerank_provider,
             "rerank_base_url": self.setup_rerank_base_url,
             "rerank_api_key": self.setup_rerank_api_key,
             "rerank_model": self.setup_rerank_model,
+            "rerank_instruction": self.setup_rerank_instruction,
             "prewarm_enabled": bool(self.setup_prewarm_enabled),
         }
 
+    def _startup_settings_signature(self) -> str:
+        return json.dumps(self._startup_settings_payload(), ensure_ascii=False, sort_keys=True)
+
+    def _startup_service_is_blocking(self, item: StartupServiceStatus) -> bool:
+        return bool(item.blocking)
+
+    def _coerce_startup_service_statuses(self, items: list[dict[str, Any]]) -> list[StartupServiceStatus]:
+        return [StartupServiceStatus(**item) for item in items]
+
+    def _apply_optional_service_overrides(self) -> None:
+        self.startup_service_statuses = list(self.startup_service_statuses)
+
+    def _invalidate_startup_test_state(self) -> None:
+        self.startup_test_passed = False
+        self.startup_last_test_signature = ""
+
+    def _load_startup_service_statuses(self) -> None:
+        statuses = probe_startup_services(self._startup_settings_payload())
+        self.startup_service_statuses = self._coerce_startup_service_statuses(statuses)
+        self._apply_optional_service_overrides()
+
     def load_startup_settings(self):
         settings = build_startup_settings()
-        self.setup_llm_api_key = str(settings.get("llm_api_key", "") or "")
-        self.setup_llm_base_url = str(settings.get("llm_base_url", "") or "")
+        self.setup_ark_api_key = str(settings.get("ark_api_key", "") or "")
         self.setup_llm_model = str(settings.get("llm_model", "") or "")
-        self.setup_vector_retrieval_enabled = bool(settings.get("vector_retrieval_enabled", False))
-        self.setup_embed_api_key = str(settings.get("embed_api_key", "") or "")
-        self.setup_embed_base_url = str(settings.get("embed_base_url", "") or "")
+        self.setup_vector_retrieval_enabled = True
         self.setup_embed_model = str(settings.get("embed_model", "") or "")
-        self.setup_qdrant_url = str(settings.get("qdrant_url", "http://qdrant:6333") or "http://qdrant:6333")
-        self.setup_rerank_enabled = bool(settings.get("rerank_enabled", False))
-        self.setup_rerank_provider = str(settings.get("rerank_provider", "local") or "local")
-        self.setup_rerank_base_url = str(settings.get("rerank_base_url", "http://rerank-local:8000/rerank") or "http://rerank-local:8000/rerank")
+        self.setup_rerank_enabled = True
+        self.setup_rerank_provider = str(settings.get("rerank_provider", "qwen") or "qwen")
+        self.setup_rerank_base_url = str(
+            settings.get("rerank_base_url", "https://dashscope.aliyuncs.com/compatible-api/v1/reranks")
+            or "https://dashscope.aliyuncs.com/compatible-api/v1/reranks"
+        )
         self.setup_rerank_api_key = str(settings.get("rerank_api_key", "") or "")
-        self.setup_rerank_model = str(settings.get("rerank_model", "BAAI/bge-reranker-v2-m3") or "BAAI/bge-reranker-v2-m3")
+        self.setup_rerank_model = str(settings.get("rerank_model", "qwen3-rerank") or "qwen3-rerank")
+        self.setup_rerank_instruction = str(
+            settings.get(
+                "rerank_instruction",
+                "Given a web search query, retrieve relevant passages that answer the query.",
+            )
+            or ""
+        )
         self.setup_prewarm_enabled = bool(settings.get("prewarm_enabled", False))
+        self._invalidate_startup_test_state()
+        self.startup_apply_running = False
+        self.startup_test_running = False
 
     def initialize_app(self):
         self.load_books()
         self.load_startup_settings()
+        self._load_startup_service_statuses()
         self.page_mode = "startup_setup"
 
     def enter_bookshelf(self):
+        if self.page_mode == "startup_setup" and not self.startup_test_is_fresh:
+            self.startup_feedback = "请先完成 Ark 配置测试，再进入书架。"
+            self.startup_feedback_is_error = True
+            return
         self.page_mode = "bookshelf"
         self.load_books()
 
     def save_startup_config(self):
         target = write_startup_settings(self._startup_settings_payload())
         self.startup_last_saved_at = time.strftime("%Y-%m-%d %H:%M:%S")
-        self.startup_feedback = f"配置已保存到 {target}，应用并重启后生效。"
+        self.startup_feedback = f"配置已保存到 {target}。"
         self.startup_feedback_is_error = False
+
+    async def refresh_startup_service_statuses(self):
+        self.startup_services_loading = True
+        self.startup_feedback = ""
+        self.startup_feedback_is_error = False
+        yield
+        try:
+            statuses = await asyncio.to_thread(
+                probe_startup_services,
+                self._startup_settings_payload(),
+            )
+            self.startup_service_statuses = self._coerce_startup_service_statuses(statuses)
+            self._apply_optional_service_overrides()
+        finally:
+            self.startup_services_loading = False
+
+    async def test_startup_config(self):
+        errors = validate_startup_settings(self._startup_settings_payload())
+        if errors:
+            self.startup_feedback = "配置未完成：\n" + "\n".join(errors)
+            self.startup_feedback_is_error = True
+            self._invalidate_startup_test_state()
+            return
+        if self.startup_has_blocking_service_failures:
+            self.startup_feedback = "服务未启动：请先等待 Docker 依赖服务就绪，再进行 Ark 配置测试。"
+            self.startup_feedback_is_error = True
+            self._invalidate_startup_test_state()
+            return
+
+        self.startup_test_running = True
+        self.startup_feedback = ""
+        self.startup_feedback_is_error = False
+        yield
+        try:
+            result = await asyncio.to_thread(
+                test_startup_settings,
+                self._startup_settings_payload(),
+            )
+            self.startup_service_statuses = self._coerce_startup_service_statuses(
+                list(result.get("services", []))
+            )
+            self._apply_optional_service_overrides()
+            if bool(result.get("ok")):
+                self.startup_test_passed = True
+                self.startup_last_test_signature = self._startup_settings_signature()
+                self.startup_feedback = str(result.get("message", "") or "Ark 配置测试通过。")
+                self.startup_feedback_is_error = False
+            else:
+                self._invalidate_startup_test_state()
+                group = str(result.get("group", "") or "").strip()
+                message = str(result.get("message", "") or "Ark 配置测试失败。").strip()
+                self.startup_feedback = f"{group}：{message}" if group else message
+                self.startup_feedback_is_error = True
+        finally:
+            self.startup_test_running = False
 
     async def apply_startup_config(self):
         errors = validate_startup_settings(self._startup_settings_payload())
@@ -624,57 +773,100 @@ class NovelState(rx.State):
             self.startup_feedback = "配置未完成：\n" + "\n".join(errors)
             self.startup_feedback_is_error = True
             return
-        self.save_startup_config()
-        self.startup_feedback = "配置已保存，正在应用并重启服务..."
+        if not self.startup_test_is_fresh:
+            self.startup_feedback = "请先完成 Ark 配置测试，并保持当前输入未变更。"
+            self.startup_feedback_is_error = True
+            return
+        if self.startup_has_blocking_service_failures:
+            self.startup_feedback = "依赖服务尚未就绪，当前不能进入应用。"
+            self.startup_feedback_is_error = True
+            return
+
+        self.startup_apply_running = True
+        self.startup_feedback = "正在应用 Ark 配置并刷新运行时客户端..."
         self.startup_feedback_is_error = False
         yield
-        request_runtime_restart()
+        try:
+            target = await asyncio.to_thread(
+                write_startup_settings,
+                self._startup_settings_payload(),
+            )
+            await asyncio.to_thread(
+                refresh_runtime_clients,
+                self._startup_settings_payload(),
+            )
+            self.startup_last_saved_at = time.strftime("%Y-%m-%d %H:%M:%S")
+            self.startup_feedback = f"配置已写入 {target}，当前会话已切换到新的 Ark 运行时。"
+            self.startup_feedback_is_error = False
+            self.load_startup_settings()
+            self._load_startup_service_statuses()
+            self.current_book_id = 0
+            self.current_novel = ""
+            self.current_character_id = 0
+            self.current_character_name = ""
+            self.chat_mode = "qa"
+            self.chat_messages = self._default_chat_messages()
+            self.chat_input = ""
+            self.page_mode = "bookshelf"
+            self.load_books()
+        except Exception as exc:
+            logger.exception("Failed to apply startup config.")
+            self.startup_feedback = f"应用配置失败：{exc}"
+            self.startup_feedback_is_error = True
+        finally:
+            self.startup_apply_running = False
 
     def open_startup_setup(self):
         self.load_startup_settings()
+        self._load_startup_service_statuses()
         self.page_mode = "startup_setup"
 
-    def set_setup_llm_api_key(self, value: str):
-        self.setup_llm_api_key = value
-
-    def set_setup_llm_base_url(self, value: str):
-        self.setup_llm_base_url = value
+    def set_setup_ark_api_key(self, value: str):
+        self.setup_ark_api_key = value
+        self._invalidate_startup_test_state()
 
     def set_setup_llm_model(self, value: str):
         self.setup_llm_model = value
+        self._invalidate_startup_test_state()
 
     def set_setup_vector_retrieval_enabled(self, value: bool):
-        self.setup_vector_retrieval_enabled = bool(value)
-
-    def set_setup_embed_api_key(self, value: str):
-        self.setup_embed_api_key = value
-
-    def set_setup_embed_base_url(self, value: str):
-        self.setup_embed_base_url = value
+        self.setup_vector_retrieval_enabled = True
+        self._apply_optional_service_overrides()
+        self._invalidate_startup_test_state()
 
     def set_setup_embed_model(self, value: str):
         self.setup_embed_model = value
-
-    def set_setup_qdrant_url(self, value: str):
-        self.setup_qdrant_url = value
+        self._invalidate_startup_test_state()
 
     def set_setup_rerank_enabled(self, value: bool):
-        self.setup_rerank_enabled = bool(value)
+        self.setup_rerank_enabled = True
+        self._apply_optional_service_overrides()
+        self._invalidate_startup_test_state()
 
     def set_setup_rerank_provider(self, value: str):
         self.setup_rerank_provider = value
+        self._apply_optional_service_overrides()
+        self._invalidate_startup_test_state()
 
     def set_setup_rerank_base_url(self, value: str):
         self.setup_rerank_base_url = value
+        self._invalidate_startup_test_state()
 
     def set_setup_rerank_api_key(self, value: str):
         self.setup_rerank_api_key = value
+        self._invalidate_startup_test_state()
 
     def set_setup_rerank_model(self, value: str):
         self.setup_rerank_model = value
+        self._invalidate_startup_test_state()
+
+    def set_setup_rerank_instruction(self, value: str):
+        self.setup_rerank_instruction = value
+        self._invalidate_startup_test_state()
 
     def set_setup_prewarm_enabled(self, value: bool):
         self.setup_prewarm_enabled = bool(value)
+        self._invalidate_startup_test_state()
 
     def set_character_archive_record_threshold(self, value: str):
         try:

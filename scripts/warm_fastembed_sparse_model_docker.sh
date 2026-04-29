@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-MODEL_NAME="${FASTEMBED_SPARSE_MODEL:-prithivida/Splade_PP_en_v1}"
+DEFAULT_FASTEMBED_SPARSE_MODEL="prithivida/Splade_PP_en_v1"
+MODEL_NAME="${FASTEMBED_SPARSE_MODEL:-$DEFAULT_FASTEMBED_SPARSE_MODEL}"
 CACHE_DIR="${FASTEMBED_CACHE_DIR:-$HOME/.cache/fastembed}"
 PY_IMAGE="${FASTEMBED_WARMUP_IMAGE:-python:3.12-slim}"
 
@@ -13,6 +14,7 @@ docker_args=(
   -e "FASTEMBED_CACHE_PATH=/fastembed_cache"
   -e "HF_HOME=/fastembed_cache"
   -e "HUGGINGFACE_HUB_CACHE=/fastembed_cache/hub"
+  -e "DEFAULT_FASTEMBED_SPARSE_MODEL=${DEFAULT_FASTEMBED_SPARSE_MODEL}"
   -e "FASTEMBED_SPARSE_MODEL=${MODEL_NAME}"
 )
 
@@ -32,10 +34,10 @@ python - <<'"'"'PY'"'"'
 import os
 from fastembed import SparseTextEmbedding
 
-model = os.getenv("FASTEMBED_SPARSE_MODEL", "prithivida/Splade_PP_en_v1")
+default_model = os.getenv("DEFAULT_FASTEMBED_SPARSE_MODEL", "").strip()
+model = os.getenv("FASTEMBED_SPARSE_MODEL", "").strip() or default_model
 encoder = SparseTextEmbedding(model_name=model)
 list(encoder.embed(["warmup sparse retrieval model"]))
 print("[FastEmbed Warmup] download and local cache ready:", model)
 PY
 '
-

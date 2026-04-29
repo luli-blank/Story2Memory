@@ -1,0 +1,23 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="720" viewBox="0 0 1200 720">
+  <rect width="1200" height="720" rx="34" fill="#0d1726"/>
+  <text x="64" y="84" fill="#f3f7ff" font-family="Avenir Next, Helvetica, sans-serif" font-size="42" font-weight="700">Character Profile</text>
+  <rect x="64" y="136" width="1072" height="512" rx="30" fill="#101f32" stroke="#31445e"/>
+  <g font-family="Avenir Next, Helvetica, sans-serif">
+    <circle cx="156" cy="246" r="54" fill="#e0a35b"/>
+    <text x="236" y="228" fill="#f3f7ff" font-size="34" font-weight="700">Narrative Lead</text>
+    <text x="236" y="272" fill="#9fb2cc" font-size="22">role · motivation · current state</text>
+    <rect x="116" y="348" width="420" height="208" rx="22" fill="#172a42"/>
+    <text x="148" y="402" fill="#7fc3ff" font-size="24" font-weight="700">Voice Notes</text>
+    <text x="148" y="448" fill="#f3f7ff" font-size="22">Reserved, precise, acts before</text>
+    <text x="148" y="482" fill="#f3f7ff" font-size="22">explaining the full plan.</text>
+    <rect x="612" y="190" width="440" height="366" rx="22" fill="#172a42"/>
+    <text x="644" y="244" fill="#7fc3ff" font-size="24" font-weight="700">Arc Summary</text>
+    <line x1="660" y1="314" x2="1000" y2="314" stroke="#3b536f" stroke-width="4"/>
+    <circle cx="700" cy="314" r="12" fill="#55b6ff"/>
+    <circle cx="830" cy="314" r="12" fill="#55b6ff"/>
+    <circle cx="960" cy="314" r="12" fill="#55b6ff"/>
+    <text x="644" y="390" fill="#f3f7ff" font-size="22">1. receives the hidden task</text>
+    <text x="644" y="430" fill="#f3f7ff" font-size="22">2. breaks with old allies</text>
+    <text x="644" y="470" fill="#f3f7ff" font-size="22">3. chooses a new path</text>
+  </g>
+</svg>

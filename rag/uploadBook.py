@@ -7,12 +7,12 @@ import re
 from concurrent.futures import Future, ThreadPoolExecutor, as_completed
 from pathlib import Path
 from typing import Any
-from urllib.parse import unquote, urlparse
 
 from dotenv import load_dotenv
 import pymysql
 
 from agent.graph import build_llm
+from database.mysql_dsn import parse_mysql_dsn, resolve_mysql_dsn
 from database.mysql_client import MySQLChatStore
 from database.session_keys import build_cosplay_session_info, build_legacy_qa_session_info, build_qa_session_info
 from langchain_core.messages import AIMessage
@@ -40,8 +40,6 @@ LEGACY_FACT_TABLES = (
     "book_entities",
     "book_assets",
 )
-CHAPTER_SUMMARY_PRIMARY_MODEL = "deepseek-v3.2"
-CHAPTER_SUMMARY_FALLBACK_MODEL = "doubao-seed-2.0-pro"
 CHAPTER_SUMMARY_PRIMARY_RETRY_COUNT = 2
 CHAPTER_SUMMARY_FALLBACK_RETRY_COUNT = 2
 NON_NARRATIVE_SENTINEL = "非小说片段：无实质性叙事内容"
@@ -78,23 +76,12 @@ def _load_runtime_env() -> None:
 
 
 def _parse_mysql_dsn(dsn: str) -> dict[str, Any] | None:
-    normalized = dsn.strip()
-    if normalized.startswith("mysql+pymysql://"):
-        normalized = "mysql://" + normalized.split("://", 1)[1]
-    parsed = urlparse(normalized)
-    if parsed.scheme != "mysql":
-        return None
-
-    database = parsed.path.lstrip("/")
-    if not (parsed.hostname and parsed.username and database):
+    parsed = parse_mysql_dsn(dsn)
+    if not parsed:
         return None
 
     return {
-        "host": parsed.hostname,
-        "port": parsed.port or 3306,
-        "user": unquote(parsed.username),
-        "password": unquote(parsed.password or ""),
-        "database": unquote(database),
+        **parsed,
         "charset": "utf8mb4",
         "autocommit": True,
         "cursorclass": pymysql.cursors.DictCursor,
@@ -103,7 +90,7 @@ def _parse_mysql_dsn(dsn: str) -> dict[str, Any] | None:
 
 def _connect():
     _load_runtime_env()
-    dsn = os.getenv("MYSQL_DSN", "").strip()
+    dsn = resolve_mysql_dsn()
     cfg = _parse_mysql_dsn(dsn)
     if not cfg:
         raise RuntimeError("Missing or invalid MYSQL_DSN.")
@@ -730,11 +717,25 @@ def _invoke_chapter_summary_once(chapter_text: str, model_name: str) -> str:
     return _stringify_content(getattr(result, "content", result))
 
 
-def _generate_chapter_summary_raw(chapter_text: str) -> str:
-    attempt_plan = (
-        [CHAPTER_SUMMARY_PRIMARY_MODEL] * (1 + CHAPTER_SUMMARY_PRIMARY_RETRY_COUNT)
-        + [CHAPTER_SUMMARY_FALLBACK_MODEL] * CHAPTER_SUMMARY_FALLBACK_RETRY_COUNT
+def _chapter_summary_model_attempt_plan() -> list[str]:
+    primary_model = (
+        str(os.getenv("CHAPTER_SUMMARY_MODEL", "") or "").strip()
+        or str(os.getenv("LLM_MODEL", "") or "").strip()
     )
+    fallback_model = str(os.getenv("CHAPTER_SUMMARY_FALLBACK_MODEL", "") or "").strip()
+    if not primary_model:
+        raise RuntimeError("Missing chapter summary model configuration. Set LLM_MODEL or CHAPTER_SUMMARY_MODEL.")
+
+    attempt_plan = [primary_model] * (1 + CHAPTER_SUMMARY_PRIMARY_RETRY_COUNT)
+    if fallback_model and fallback_model != primary_model:
+        attempt_plan.extend([fallback_model] * CHAPTER_SUMMARY_FALLBACK_RETRY_COUNT)
+    else:
+        attempt_plan.extend([primary_model] * CHAPTER_SUMMARY_FALLBACK_RETRY_COUNT)
+    return attempt_plan
+
+
+def _generate_chapter_summary_raw(chapter_text: str) -> str:
+    attempt_plan = _chapter_summary_model_attempt_plan()
     last_error = "unknown error"
     for attempt_index, model_name in enumerate(attempt_plan, start=1):
         try:

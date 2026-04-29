@@ -11,6 +11,7 @@ from typing import Annotated, Any, TypedDict
 
 import httpx
 from dotenv import load_dotenv
+from core.public_runtime import require_runtime_llm_model, resolve_runtime_llm_base_url
 
 from langchain_core.messages import BaseMessage
 from langchain_core.tools import BaseTool, tool
@@ -441,8 +442,8 @@ def build_llm(model_name_override: str | None = None) -> ChatOpenAI:
     if not api_key:
         raise ValueError("Missing LLM_API_KEY environment variable.")
 
-    base_url = os.getenv("LLM_BASE_URL")
-    model_name = model_name_override or os.getenv("LLM_MODEL", "deepseek-v3.2")
+    base_url = resolve_runtime_llm_base_url()
+    model_name = model_name_override or require_runtime_llm_model()
 
     kwargs: dict[str, Any] = {
         "model": model_name,

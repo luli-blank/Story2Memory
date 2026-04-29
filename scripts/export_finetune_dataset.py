@@ -14,6 +14,7 @@ if str(ROOT_DIR) not in sys.path:
 import pymysql
 from dotenv import load_dotenv
 
+from database.mysql_dsn import resolve_mysql_dsn
 from database.mysql_client import MySQLChatStore
 from rag.finetune_dataset import (
     build_messages_training_record,
@@ -77,7 +78,7 @@ def _parse_csv_ids(raw_value: str) -> list[int]:
 
 def _connect():
     _load_runtime_env()
-    conn_cfg = MySQLChatStore._parse_mysql_dsn(str(os.getenv("MYSQL_DSN", "")).strip())
+    conn_cfg = MySQLChatStore._parse_mysql_dsn(resolve_mysql_dsn())
     if not conn_cfg:
         raise RuntimeError("Missing or invalid MYSQL_DSN.")
     try:

@@ -21,6 +21,7 @@ if str(ROOT_DIR) not in sys.path:
     sys.path.insert(0, str(ROOT_DIR))
 
 from agent.graph import build_llm  # noqa: E402
+from core.public_runtime import require_runtime_llm_model  # noqa: E402
 from rag.prompt import (  # noqa: E402
     CHARACTER_CANONICAL_REWRITE_PROMPT,
     CHARACTER_DIRTY_REVIEW_PROMPT,
@@ -46,15 +47,10 @@ CREATE TABLE IF NOT EXISTS `characters` (
 """
 CHARACTER_DIRTY_REVIEW_BATCH_SIZE = 50
 CHARACTER_DIRTY_REVIEW_MAX_CONCURRENCY = 20
-CHARACTER_GENERIC_REWRITE_MODEL = "Doubao-Seed-2.0-lite"
 CHARACTER_GENERIC_REWRITE_MAX_CONTEXT_CHAPTERS = 6
 CHARACTER_GENERIC_REWRITE_MAX_CONTENT_EXCERPT_CHARS = 240
 CHARACTER_GENERIC_REWRITE_MAX_CONCURRENCY = 25
-CHARACTER_GROUP_FINALIZE_MODEL = "Doubao-Seed-2.0-lite"
 CHARACTER_GROUP_FINALIZE_MAX_CONCURRENCY = 6
-CHARACTER_SECOND_PASS_MODEL = str(os.getenv("CHARACTER_SECOND_PASS_MODEL", "")).strip() or str(
-    os.getenv("LLM_MODEL", "deepseek-v3.2")
-).strip() or "deepseek-v3.2"
 CHARACTER_SECOND_PASS_GROUP_RESOLUTION_MAX_CONCURRENCY = 4
 CHARACTER_SECOND_PASS_MAX_EVIDENCE_SNIPPETS = 5
 CHARACTER_CANONICAL_REWRITE_BATCH_SIZE = 60
@@ -140,6 +136,18 @@ BLOCKED_CHARACTER_ALIASES = {
     "医生",
     "主治医生",
 }
+
+
+def _character_generic_rewrite_model() -> str:
+    return str(os.getenv("CHARACTER_GENERIC_REWRITE_MODEL", "")).strip() or require_runtime_llm_model()
+
+
+def _character_group_finalize_model() -> str:
+    return str(os.getenv("CHARACTER_GROUP_FINALIZE_MODEL", "")).strip() or require_runtime_llm_model()
+
+
+def _character_second_pass_model() -> str:
+    return str(os.getenv("CHARACTER_SECOND_PASS_MODEL", "")).strip() or require_runtime_llm_model()
 BLOCKED_CHARACTER_ALIAS_PATTERNS = (
     re.compile(
         r"^(?:那|那个|这|这个|一名|一位|某个|某位|那位|这位|那只|这只|一个)?"
@@ -907,7 +915,7 @@ def _rewrite_generic_character_items(book_id: int, items: list[dict[str, Any]]) 
         return items
 
     chapter_contexts = _load_chapter_contexts(book_id, chapter_indexes)
-    llm_client = build_llm(CHARACTER_GENERIC_REWRITE_MODEL)
+    llm_client = build_llm(_character_generic_rewrite_model())
     return asyncio.run(_rewrite_generic_character_items_async(llm_client, items, chapter_contexts))
 
 
@@ -1986,7 +1994,7 @@ async def _finalize_item_groups_async(
 def _finalize_item_groups(groups: list[list[dict[str, Any]]]) -> list[dict[str, Any]]:
     if not groups:
         return []
-    llm_client = build_llm(CHARACTER_GROUP_FINALIZE_MODEL)
+    llm_client = build_llm(_character_group_finalize_model())
     return asyncio.run(_finalize_item_groups_async(llm_client, groups))
 
 
@@ -2030,7 +2038,7 @@ async def _run_character_rewrite_and_merge_async(
     groups = await _build_candidate_merge_groups(rewritten_llm_client, int(book_id), prefolded_items)
     if not groups:
         return []
-    finalize_llm_client = build_llm(CHARACTER_GROUP_FINALIZE_MODEL)
+    finalize_llm_client = build_llm(_character_group_finalize_model())
     return await _finalize_item_groups_async(finalize_llm_client, groups)
 
 
@@ -2256,7 +2264,7 @@ async def _run_second_pass_merge_diagnostic_async(book_id: int, items: list[dict
             "finalized_items": finalized_items,
         }
 
-    llm_client = build_llm(CHARACTER_SECOND_PASS_MODEL)
+    llm_client = build_llm(_character_second_pass_model())
     identity_summary_map = await _extract_candidate_identity_summaries(llm_client, int(book_id), candidate_groups)
     resolved_groups = await _resolve_second_pass_candidate_groups(llm_client, candidate_groups, identity_summary_map)
 
@@ -2276,7 +2284,7 @@ async def _run_second_pass_merge_diagnostic_async(book_id: int, items: list[dict
         key=lambda group: min(order_map.get(str(item.get("_item_id") or ""), 10**9) for item in group) if group else 10**9
     )
 
-    finalized_items = await _finalize_item_groups_async(build_llm(CHARACTER_GROUP_FINALIZE_MODEL), resolved_groups)
+    finalized_items = await _finalize_item_groups_async(build_llm(_character_group_finalize_model()), resolved_groups)
     finalized_items = _merge_same_canonical_character_items(_finalize_character_aliases(finalized_items))
     return {
         "candidate_groups": candidate_groups,

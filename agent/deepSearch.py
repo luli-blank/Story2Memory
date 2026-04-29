@@ -21,6 +21,7 @@ from pymysql.cursors import DictCursor
 
 from agent.graph import apply_llm_network_settings, get_active_request_id, set_active_request_id, wrap_tracked_llm
 from agent.prompt import COMPRESSION_PROMPT, DIRECTORY_COMPRESSION_PROMPT
+from core.public_runtime import require_runtime_llm_model, resolve_runtime_llm_base_url
 
 logger = logging.getLogger(__name__)
 ROOT_DIR = Path(__file__).resolve().parents[1]
@@ -184,8 +185,8 @@ def _build_llm() -> ChatOpenAI:
     if not api_key:
         raise ValueError("Missing LLM_API_KEY environment variable.")
 
-    model_name = os.getenv("LLM_MODEL", "deepseek-v3.2").strip() or "deepseek-v3.2"
-    base_url = os.getenv("LLM_BASE_URL", "").strip()
+    model_name = require_runtime_llm_model()
+    base_url = resolve_runtime_llm_base_url()
 
     kwargs: dict[str, Any] = {
         "model": model_name,

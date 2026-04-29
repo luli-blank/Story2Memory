@@ -186,7 +186,7 @@ def test_delete_book_cascade_removes_precise_sessions_and_managed_files(monkeypa
 
         def fetchall(self):
             if "FROM characters" in self._last_sql:
-                return [{"id": 11, "name": "诺诺"}]
+                return [{"id": 11, "name": "林夏"}]
             return []
 
         def __enter__(self):
@@ -253,7 +253,7 @@ def test_delete_book_cascade_removes_precise_sessions_and_managed_files(monkeypa
         book_id=3,
         novel_title="测试书",
         character_id=11,
-        character_name="诺诺",
+        character_name="林夏",
     )
 
     assert result["deleted"] == 1

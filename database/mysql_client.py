@@ -1,16 +1,16 @@
 from __future__ import annotations
 
 import logging
-import os
 import threading
 from pathlib import Path
 from typing import Any
-from urllib.parse import unquote, urlparse
 
 try:
     import pymysql
 except ModuleNotFoundError:  # pragma: no cover - runtime optional dependency
     pymysql = None
+
+from .mysql_dsn import parse_mysql_dsn, resolve_mysql_dsn
 
 logger = logging.getLogger(__name__)
 
@@ -19,7 +19,7 @@ class MySQLChatStore:
     """Minimal MySQL storage for session summary + raw messages."""
 
     def __init__(self, dsn: str | None = None):
-        self._dsn = (dsn or os.getenv("MYSQL_DSN", "")).strip()
+        self._dsn = (dsn or resolve_mysql_dsn()).strip()
         self._conn_cfg = self._parse_mysql_dsn(self._dsn) if self._dsn else None
         self.enabled = bool(self._conn_cfg) and pymysql is not None
         self._schema_ready = False
@@ -27,24 +27,12 @@ class MySQLChatStore:
 
     @staticmethod
     def _parse_mysql_dsn(dsn: str) -> dict[str, Any] | None:
-        normalized = dsn.strip()
-        if normalized.startswith("mysql+pymysql://"):
-            normalized = "mysql://" + normalized.split("://", 1)[1]
-
-        parsed = urlparse(normalized)
-        if parsed.scheme != "mysql":
-            return None
-
-        database = parsed.path.lstrip("/")
-        if not (parsed.hostname and parsed.username and database):
+        parsed = parse_mysql_dsn(dsn)
+        if not parsed:
             return None
 
         return {
-            "host": parsed.hostname,
-            "port": parsed.port or 3306,
-            "user": unquote(parsed.username),
-            "password": unquote(parsed.password or ""),
-            "database": unquote(database),
+            **parsed,
             "charset": "utf8mb4",
             "autocommit": True,
             "cursorclass": pymysql.cursors.DictCursor if pymysql else None,

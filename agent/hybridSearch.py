@@ -23,6 +23,15 @@ from volcenginesdkarkruntime import Ark
 
 from agent.prompt import HYBRID_RESULT_FILTER_PROMPT
 from agent.graph import apply_llm_network_settings, wrap_tracked_llm
+from core.public_runtime import (
+    ARK_BASE_URL,
+    DEFAULT_RERANK_MODEL,
+    require_runtime_embed_model,
+    require_runtime_llm_model,
+    resolve_runtime_embed_base_url,
+    resolve_runtime_embed_model,
+    resolve_runtime_llm_base_url,
+)
 from database.qdrant_client import (
     CHAPTER_COLLECTION,
     PLOT_COLLECTION,
@@ -37,13 +46,15 @@ ENV_OVERRIDE_VAR = "STORY2MEMORY_ENV_OVERRIDE"
 FASTEMBED_CACHE_PATH_ENV_VAR = "FASTEMBED_CACHE_PATH"
 FASTEMBED_CACHE_DIR_ENV_VAR = "FASTEMBED_CACHE_DIR"
 ENTITY_EMBED_MODEL_ENV_VAR = "ENTITY_EMBED_MODEL"
-DEFAULT_ENTITY_EMBED_MODEL = "ep-20260303004802-tlt8f"
 CHARACTER_COLLECTION = "characters"
 ORIGANIZATION_COLLECTION = "origanizations"
 SPECIAL_EXISTENCE_COLLECTION = "special_existences"
 WORLD_RULE_COLLECTION = "world_rules"
 HYBRID_SPARSE_RETRIEVAL_ENABLED_ENV_VAR = "HYBRID_SPARSE_RETRIEVAL_ENABLED"
 HYBRID_DENSE_RETRIEVAL_ENABLED_ENV_VAR = "HYBRID_DENSE_RETRIEVAL_ENABLED"
+DEFAULT_FASTEMBED_SPARSE_MODEL = "prithivida/Splade_PP_en_v1"
+DEFAULT_OPENAI_COMPATIBLE_RERANK_MODEL = "bge-reranker-v2-m3"
+DEFAULT_QWEN_RERANK_MODEL = "qwen3-rerank"
 
 RRF_K = 60.0
 HYBRID_FILTER_COMPLEX_MARKERS = (
@@ -291,12 +302,11 @@ class EmbeddingQueryClient:
         if not api_key:
             raise RuntimeError("Missing EMBED_API_KEY or ARK_API_KEY for hybrid embedding query.")
 
-        base_url = os.getenv("EMBED_BASE_URL", "").strip() or "https://ark.cn-beijing.volces.com/api/v3"
+        base_url = resolve_runtime_embed_base_url()
         timeout = float(os.getenv("EMBED_TIMEOUT_SECONDS", "20").strip() or 20.0)
         model = (
             str(model_override or "").strip()
-            or os.getenv("EMBED_MODEL", "ep-20251224183557-n8vdn").strip()
-            or "ep-20251224183557-n8vdn"
+            or require_runtime_embed_model()
         )
 
         self.api_key = api_key
@@ -457,8 +467,8 @@ def _get_embedding_query_client() -> EmbeddingQueryClient:
 @lru_cache(maxsize=1)
 def _get_entity_embedding_query_client() -> EmbeddingQueryClient:
     model = (
-        os.getenv(ENTITY_EMBED_MODEL_ENV_VAR, "").strip()
-        or DEFAULT_ENTITY_EMBED_MODEL
+        resolve_runtime_embed_model(ENTITY_EMBED_MODEL_ENV_VAR)
+        or require_runtime_embed_model(ENTITY_EMBED_MODEL_ENV_VAR)
     )
     return EmbeddingQueryClient(model_override=model)
 
@@ -469,8 +479,8 @@ def _build_hybrid_filter_llm() -> Any:
     if not api_key:
         raise RuntimeError("Missing LLM_API_KEY for hybrid result filtering.")
 
-    model_name = os.getenv("HYBRID_FILTER_LLM_MODEL", "deepseek-v3.2").strip() or "deepseek-v3.2"
-    base_url = os.getenv("LLM_BASE_URL", "").strip()
+    model_name = os.getenv("HYBRID_FILTER_LLM_MODEL", "").strip() or require_runtime_llm_model()
+    base_url = resolve_runtime_llm_base_url()
     timeout = float(os.getenv("HYBRID_FILTER_TIMEOUT_SECONDS", "20").strip() or 20.0)
     kwargs: dict[str, Any] = {
         "model": model_name,
@@ -678,17 +688,17 @@ class RerankClient:
         elif self.provider == "qwen":
             default_base_url = "https://dashscope.aliyuncs.com/compatible-api/v1/reranks"
         else:
-            default_base_url = "https://ark.cn-beijing.volces.com/api/v3"
+            default_base_url = ARK_BASE_URL
         self.base_url = os.getenv("RERANK_BASE_URL", "").strip() or default_base_url
         self.timeout = float(os.getenv("RERANK_TIMEOUT_SECONDS", "20").strip() or 20.0)
         if self.provider == "local":
-            default_model = "BAAI/bge-reranker-v2-m3"
+            default_model = DEFAULT_RERANK_MODEL
         elif self.provider == "openai_compatible":
-            default_model = "bge-reranker-v2-m3"
+            default_model = DEFAULT_OPENAI_COMPATIBLE_RERANK_MODEL
         elif self.provider == "qwen":
-            default_model = "qwen3-rerank"
+            default_model = DEFAULT_QWEN_RERANK_MODEL
         else:
-            default_model = "bge-reranker-v2-m3"
+            default_model = DEFAULT_OPENAI_COMPATIBLE_RERANK_MODEL
         self.model = os.getenv("RERANK_MODEL", default_model).strip() or default_model
         self.rerank_instruction = os.getenv("RERANK_INSTRUCTION", "").strip()
         self._client: Ark | None = None
@@ -1041,7 +1051,7 @@ def _try_import_sparse_encoder():
         from fastembed import SparseTextEmbedding  # type: ignore
     except Exception:
         return None
-    model_name = os.getenv("FASTEMBED_SPARSE_MODEL", "").strip() or "prithivida/Splade_PP_en_v1"
+    model_name = os.getenv("FASTEMBED_SPARSE_MODEL", "").strip() or DEFAULT_FASTEMBED_SPARSE_MODEL
     cache_dir = _resolve_fastembed_cache_dir()
     os.environ.setdefault(FASTEMBED_CACHE_PATH_ENV_VAR, str(cache_dir))
     try:
@@ -1620,13 +1630,12 @@ def _hybrid_search(
             "after_filter_count": len(filtered_results),
             "filter_source_ids": [int(item) for item in (source_ids or []) if int(item) > 0],
             "filter_applied": bool(source_ids),
-            "rerank_model": os.getenv("RERANK_MODEL", "bge-reranker-v2-m3").strip() or "bge-reranker-v2-m3",
+            "rerank_model": os.getenv("RERANK_MODEL", "").strip() or DEFAULT_RERANK_MODEL,
             "embed_model": (
                 str(getattr(query_client, "model", "") or "").strip()
-                or os.getenv("EMBED_MODEL", "ep-20251224183557-n8vdn").strip()
-                or "ep-20251224183557-n8vdn"
+                or require_runtime_embed_model()
             ),
-            "filter_llm_model": os.getenv("HYBRID_FILTER_LLM_MODEL", "deepseek-v3.2").strip() or "deepseek-v3.2",
+            "filter_llm_model": os.getenv("HYBRID_FILTER_LLM_MODEL", "").strip() or require_runtime_llm_model(),
         },
         "results": filtered_results,
     }

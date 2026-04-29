@@ -1,0 +1,16 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="720" viewBox="0 0 1200 720">
+  <rect width="1200" height="720" rx="34" fill="#091827"/>
+  <text x="64" y="84" fill="#f3f7ff" font-family="Avenir Next, Helvetica, sans-serif" font-size="42" font-weight="700">Roleplay Chat</text>
+  <g font-family="Avenir Next, Helvetica, sans-serif">
+    <rect x="72" y="136" width="450" height="96" rx="26" fill="#17283e" stroke="#31445e"/>
+    <text x="108" y="194" fill="#f3f7ff" font-size="25">Ask as yourself.</text>
+    <rect x="568" y="254" width="560" height="100" rx="28" fill="#1e8bd1"/>
+    <text x="604" y="315" fill="#ffffff" font-size="25">What would you do next?</text>
+    <rect x="72" y="392" width="760" height="178" rx="28" fill="#17283e" stroke="#31445e"/>
+    <text x="108" y="452" fill="#f3f7ff" font-size="25">I would not explain everything yet.</text>
+    <text x="108" y="492" fill="#f3f7ff" font-size="25">First, I need to keep the group safe</text>
+    <text x="108" y="532" fill="#f3f7ff" font-size="25">and test which clue is real.</text>
+    <rect x="908" y="420" width="172" height="76" rx="20" fill="#123456" stroke="#2b84d8"/>
+    <text x="938" y="468" fill="#7fc3ff" font-size="22" font-weight="700">in character</text>
+  </g>
+</svg>

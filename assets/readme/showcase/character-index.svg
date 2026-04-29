@@ -1,0 +1,29 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="720" viewBox="0 0 1200 720">
+  <rect width="1200" height="720" rx="34" fill="#101c2d"/>
+  <text x="64" y="84" fill="#f3f7ff" font-family="Avenir Next, Helvetica, sans-serif" font-size="42" font-weight="700">Character Index</text>
+  <text x="64" y="124" fill="#9fb2cc" font-family="Avenir Next, Helvetica, sans-serif" font-size="22">Browse extracted characters and jump into profiles.</text>
+  <g transform="translate(64 172)" font-family="Avenir Next, Helvetica, sans-serif">
+    <rect width="1072" height="440" rx="28" fill="#0c1726" stroke="#31445e"/>
+    <g transform="translate(42 42)">
+      <circle cx="42" cy="42" r="42" fill="#d68554"/>
+      <text x="112" y="34" fill="#f3f7ff" font-size="28" font-weight="700">Protagonist</text>
+      <text x="112" y="72" fill="#9fb2cc" font-size="21">42 appearances · central arc</text>
+    </g>
+    <g transform="translate(42 160)">
+      <circle cx="42" cy="42" r="42" fill="#5c9bd6"/>
+      <text x="112" y="34" fill="#f3f7ff" font-size="28" font-weight="700">Strategist</text>
+      <text x="112" y="72" fill="#9fb2cc" font-size="21">31 appearances · alliance shift</text>
+    </g>
+    <g transform="translate(42 278)">
+      <circle cx="42" cy="42" r="42" fill="#70ad7c"/>
+      <text x="112" y="34" fill="#f3f7ff" font-size="28" font-weight="700">Witness</text>
+      <text x="112" y="72" fill="#9fb2cc" font-size="21">18 appearances · hidden clue</text>
+    </g>
+    <rect x="706" y="42" width="298" height="320" rx="24" fill="#13243a" stroke="#2b84d8"/>
+    <text x="746" y="104" fill="#7fc3ff" font-size="24" font-weight="700">Profile Ready</text>
+    <text x="746" y="154" fill="#f3f7ff" font-size="22">Identity</text>
+    <text x="746" y="194" fill="#f3f7ff" font-size="22">Motivation</text>
+    <text x="746" y="234" fill="#f3f7ff" font-size="22">Voice</text>
+    <text x="746" y="274" fill="#f3f7ff" font-size="22">Timeline</text>
+  </g>
+</svg>

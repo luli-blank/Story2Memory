@@ -16,6 +16,7 @@ import pymysql
 import httpx
 from dotenv import load_dotenv
 from openai import OpenAI
+from core.public_runtime import require_runtime_embed_model, resolve_runtime_embed_base_url
 
 try:
     from qdrant_client import QdrantClient
@@ -213,8 +214,8 @@ class OpenAIEmbeddingClient:
         if not api_key:
             raise RuntimeError("Missing EMBED_API_KEY or ARK_API_KEY for embedding API.")
 
-        self.model = os.getenv("EMBED_MODEL", "ep-20251224183557-n8vdn").strip() or "ep-20251224183557-n8vdn"
-        self.base_url = os.getenv("EMBED_BASE_URL", "").strip() or "https://ark.cn-beijing.volces.com/api/v3"
+        self.model = require_runtime_embed_model()
+        self.base_url = resolve_runtime_embed_base_url()
         timeout = float(os.getenv("EMBED_TIMEOUT_SECONDS", "20").strip() or 20.0)
         self.batch_size = max(1, int(os.getenv("EMBED_BATCH_SIZE", "32").strip() or 32))
         self.api_key = api_key

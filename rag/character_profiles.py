@@ -4,6 +4,7 @@ import concurrent.futures
 import hashlib
 import json
 import logging
+import os
 import re
 import time
 from collections import defaultdict
@@ -65,7 +66,7 @@ MAX_CONCURRENT_ROLEPLAY_BATCH_TASKS = 6
 MAX_CONCURRENT_ROLEPLAY_RELATION_SUMMARIES = 6
 MAX_ROLEPLAY_RELATION_TARGETS = 8
 CHARACTER_ARCHIVE_SCHEMA_VERSION = 4
-JSON_RETRY_FALLBACK_MODEL = "Doubao-Seed-2.0-pro"
+JSON_RETRY_FALLBACK_MODEL_ENV_VAR = "CHARACTER_PROFILE_JSON_RETRY_FALLBACK_MODEL"
 PROFILE_CHANGE_KEYWORDS = ("成为", "加入", "背叛", "暴露", "恢复", "叛逃", "接任", "身份", "立场")
 PROFILE_LIFE_STATE_KEYWORDS = ("死亡", "复活", "重伤", "濒死", "失控", "复苏", "觉醒", "苏醒")
 PROFILE_ABILITY_RESOURCE_KEYWORDS = ("获得", "失去", "驾驭", "压制", "拿到", "夺得", "使用", "掌握", "能力", "鬼域", "灵异", "物品")
@@ -1332,6 +1333,11 @@ def _invoke_json_once(
     return parsed, raw_text
 
 
+def _json_retry_fallback_model() -> str | None:
+    value = str(os.getenv(JSON_RETRY_FALLBACK_MODEL_ENV_VAR, "") or "").strip()
+    return value or None
+
+
 def _invoke_json_until_valid(
     prompt: str,
     *,
@@ -1340,12 +1346,13 @@ def _invoke_json_until_valid(
     attempt: int = 1,
 ) -> dict[str, Any]:
     while True:
-        model_name_override = JSON_RETRY_FALLBACK_MODEL if attempt >= 3 else None
-        if attempt == 3:
+        fallback_model = _json_retry_fallback_model()
+        model_name_override = fallback_model if attempt >= 3 else None
+        if attempt == 3 and fallback_model:
             logger.warning(
                 "[character_profiles] switching model after repeated invalid JSON. label=%s model=%s",
                 log_label,
-                JSON_RETRY_FALLBACK_MODEL,
+                fallback_model,
             )
         parsed, raw_text = _invoke_json_once(
             prompt,

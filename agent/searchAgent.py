@@ -37,6 +37,7 @@ from agent.hybridSearch import (
 )
 from agent.graph import apply_llm_network_settings, wrap_tracked_llm
 from agent.skills.retrieval_route_skill.route_skill import plan_multi_search_route
+from core.public_runtime import require_runtime_llm_model, resolve_runtime_llm_base_url
 from database.qdrant_client import get_qdrant_embedding_store
 
 logger = logging.getLogger(__name__)
@@ -1387,12 +1388,11 @@ def _get_recovery_planner_llm() -> ChatOpenAI:
 
     model_name = (
         os.getenv("RECOVERY_LLM_MODEL", "").strip()
-        or os.getenv("LLM_MODEL", "deepseek-v3.2").strip()
-        or "deepseek-v3.2"
+        or require_runtime_llm_model()
     )
     base_url = (
         os.getenv("RECOVERY_LLM_BASE_URL", "").strip()
-        or os.getenv("LLM_BASE_URL", "").strip()
+        or resolve_runtime_llm_base_url()
     )
     timeout = float(os.getenv("RECOVERY_LLM_TIMEOUT_SECONDS", "20").strip() or 20.0)
     kwargs: dict[str, Any] = {
@@ -2884,5 +2884,5 @@ def contentSearch(query: str, novel_title: str = "", book_id: int = 0, request_i
 
 
 if __name__ == "__main__":
-    sample = run_deep_research(book_id=1, query="杨间为什么叫杨戬")
+    sample = run_deep_research(book_id=1, query="主角称号的来源是什么")
     print(json.dumps(sample, ensure_ascii=False, indent=2))

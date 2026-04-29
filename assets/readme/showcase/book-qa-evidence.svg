@@ -1,0 +1,29 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="720" viewBox="0 0 1200 720">
+  <defs>
+    <linearGradient id="bg" x1="0" x2="1" y1="0" y2="1">
+      <stop stop-color="#071625"/>
+      <stop offset="1" stop-color="#173651"/>
+    </linearGradient>
+  </defs>
+  <rect width="1200" height="720" rx="34" fill="url(#bg)"/>
+  <text x="64" y="82" fill="#f3f7ff" font-family="Avenir Next, Helvetica, sans-serif" font-size="40" font-weight="700">Ask With Evidence</text>
+  <rect x="64" y="126" width="494" height="502" rx="28" fill="#0f2033" stroke="#31445e"/>
+  <text x="100" y="184" fill="#9fb2cc" font-family="Avenir Next, Helvetica, sans-serif" font-size="22">Question</text>
+  <rect x="100" y="214" width="390" height="76" rx="20" fill="#1e8bd1"/>
+  <text x="126" y="262" fill="#ffffff" font-family="Avenir Next, Helvetica, sans-serif" font-size="24">Why did the plan fail?</text>
+  <text x="100" y="356" fill="#9fb2cc" font-family="Avenir Next, Helvetica, sans-serif" font-size="22">Answer</text>
+  <text x="100" y="404" fill="#f3f7ff" font-family="Avenir Next, Helvetica, sans-serif" font-size="26">The agent found three linked clues</text>
+  <text x="100" y="444" fill="#f3f7ff" font-family="Avenir Next, Helvetica, sans-serif" font-size="26">across nearby chapters.</text>
+  <rect x="620" y="126" width="516" height="502" rx="28" fill="#0f2033" stroke="#31445e"/>
+  <text x="656" y="184" fill="#9fb2cc" font-family="Avenir Next, Helvetica, sans-serif" font-size="22">Evidence</text>
+  <g fill="#1a2c43" stroke="#3b536f">
+    <rect x="656" y="220" width="420" height="74" rx="18"/>
+    <rect x="656" y="318" width="420" height="74" rx="18"/>
+    <rect x="656" y="416" width="420" height="74" rx="18"/>
+  </g>
+  <g fill="#f3f7ff" font-family="Avenir Next, Helvetica, sans-serif" font-size="22">
+    <text x="684" y="266">Chapter 08 - key scene</text>
+    <text x="684" y="364">Chapter 09 - contradiction</text>
+    <text x="684" y="462">Chapter 11 - consequence</text>
+  </g>
+</svg>

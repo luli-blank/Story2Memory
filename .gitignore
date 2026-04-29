@@ -3,12 +3,14 @@ assets/external/
 __pycache__/
 .web
 *.py[cod]
+temp_*.py
 *.db
 .states
 data/logs/
 data/book/
 data/picture/
 data/config/
+output/
 uploaded_files/
 .worktrees/
 .env

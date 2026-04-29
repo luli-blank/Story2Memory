@@ -1,92 +1,116 @@
+![Story2Memory hero banner](./assets/readme/title.png)
+
 # Story2Memory
 
-Story2Memory 是一个面向本机使用场景的小说分析工作台，提供 Reflex Web UI，并通过 MySQL、Qdrant、Neo4j、Redis 和本地 rerank 服务支撑上传、分析与角色对话能力。
+本地小说分析工作台。上传你有权处理的 `txt` / `epub`，完成检索问答、证据追踪、人物画像、关系网络与角色扮演对话。
 
-本仓库的公开目标是：
+[![License: MIT](https://img.shields.io/badge/license-MIT-111111.svg)](./LICENSE) [![Docker](https://img.shields.io/badge/deploy-Docker-2496ED.svg)](https://www.docker.com/) [![Local First](https://img.shields.io/badge/runtime-Local%20First-2E8B57.svg)](#quick-start)
 
-- 提供一个可公开发布、可一键 Docker 部署的版本
-- 默认仅本机访问，开箱即安全
-- 不附带任何小说正文、`epub`、封面图或其他受版权约束的数据
-- 允许用户自行上传合法拥有使用权的 txt / epub 文件
+[Showcase](#showcase) · [Quick Start](#quick-start) · [First-Run Config](#first-run-config) · [Manual Config](#manual-config) · [Open-Source Boundary](#open-source-boundary)
 
-代码以 [MIT](./LICENSE) 许可证发布。该许可证仅覆盖本仓库代码，不赋予任何第三方小说内容、封面或衍生数据的再分发权。
+## Why
 
-## Quickstart
+Story2Memory 把一部小说整理成可检索、可追问、可扮演的本地知识工作台。默认仅本机访问，适合在自己的机器上处理有权使用的文本。
+
+## Features
+
+| 能力 | 说明 |
+| --- | --- |
+| 本地书库 | 上传 `txt` / `epub`，按书籍管理分析结果 |
+| Agent 问答 | 围绕整本书提问，并返回章节级 evidence |
+| 人物画像 | 自动整理身份、动机、语言风格、剧情轨迹 |
+| 关系网络 | 展示人物、情感与事件之间的关联 |
+| 角色扮演 | 基于角色档案和关系记忆进行对话 |
+| Docker 部署 | MySQL、Neo4j、Qdrant、Redis 统一编排 |
+
+## Showcase
+
+以下为匿名演示界面，不包含第三方小说正文、封面或真实数据。
+
+| 本地书架 | 证据问答 |
+| --- | --- |
+| ![Bookshelf](./assets/readme/showcase/bookshelf.svg) | ![Book QA Evidence](./assets/readme/showcase/book-qa-evidence.svg) |
+
+| 角色档案 | 人物画像 |
+| --- | --- |
+| ![Character Index](./assets/readme/showcase/character-index.svg) | ![Character Profile](./assets/readme/showcase/character-profile.svg) |
+
+| 角色扮演 | 情感时间线 |
+| --- | --- |
+| ![Roleplay Relations](./assets/readme/showcase/roleplay-relations.svg) | ![Emotional Timeline](./assets/readme/showcase/emotional-timeline.svg) |
+
+![Relationship Graph](./assets/readme/showcase/relationship-graph.svg)
+
+## Quick Start
 
 ```bash
 cp .env.example .env
 ```
 
-编辑 `.env`，至少替换以下示例值：
+编辑 `.env`，至少替换：
 
 - `MYSQL_ROOT_PASSWORD`
 - `MYSQL_PASSWORD`
 - `NEO4J_PASSWORD`
 
-然后启动：
+启动：
 
 ```bash
 docker compose up --build
 ```
 
-默认访问地址：
+打开：
 
-- 前端 UI: `http://127.0.0.1:3000`
-- Reflex backend / health endpoints: `http://127.0.0.1:8000`
-- MySQL: `127.0.0.1:13306`
+- `http://127.0.0.1:3000`
+- `http://127.0.0.1:8000/_health`
 
-启动后会先进入 Web 启动配置页。你可以在页面里填写 LLM 配置，并按需启用向量召回 / rerank，再点击“进入书架”进入原有书架界面。
+首页按顺序操作：`刷新状态`、`测试配置`、`开始使用`。
 
-默认仅本机访问。公开版不会默认开放局域网或公网访问。如果你需要对外暴露，请自行增加反向代理、鉴权和网络层访问控制。
+## First-Run Config
 
-## Runtime Notes
+首启页会要求填写并测试这些模型配置：
 
-- 公开版默认 `AGENT_RUNTIME_PREWARM_ENABLED=0`，启动阶段不会主动预热外部 LLM 运行时。
-- 公开版默认 `HYBRID_DENSE_RETRIEVAL_ENABLED=0`、`RERANK_DISABLED=1`，高级检索能力默认关闭，需要在启动页显式启用。
-- 应用可以在没有真实 LLM 调用的情况下完成“启动级”验证。
-- 分析、聊天、角色扮演等模型相关功能，仍然需要你补齐真实的 LLM / Embedding 配置。
+| 字段 | 用途 | 默认 URL |
+| --- | --- | --- |
+| `ARK_API_KEY` | 火山引擎 Ark API Key | - |
+| `LLM_MODEL` | 问答、总结、推理模型 | `https://ark.cn-beijing.volces.com/api/coding/v3` |
+| `EMBED_MODEL` | 向量检索模型 | `https://ark.cn-beijing.volces.com/api/v3` |
+| `RERANK_API_KEY` | rerank API Key | - |
+| `RERANK_MODEL` | 默认 `qwen3-rerank` | `https://dashscope.aliyuncs.com/compatible-api/v1/reranks` |
 
-必填模型配置：
+首启测试通过后，配置会写入本地 `data/config/runtime.env`。该文件已被 `.gitignore` 排除。
 
-- `LLM_API_KEY`
-- `LLM_BASE_URL`
-- `LLM_MODEL`
+## Manual Config
 
-如使用单独的 embedding 服务，还需要：
+如果直接编辑 `.env` 或 `data/config/runtime.env`，常用字段如下：
 
-- `EMBED_API_KEY`
-- `EMBED_BASE_URL`
-- `EMBED_MODEL`
+- `LLM_MODEL` 填你的 Ark Coding Plan 模型名
+- `EMBED_MODEL` 填你的 Ark embedding endpoint，例如 `ep-...`
+- `RERANK_PROVIDER=qwen`
+- `RERANK_BASE_URL=https://dashscope.aliyuncs.com/compatible-api/v1/reranks`
+- `RERANK_MODEL=qwen3-rerank`
+- `AGENT_RUNTIME_PREWARM_ENABLED=0` 表示默认不预热 agent 运行时
+- 默认会由 `MYSQL_USER`、`MYSQL_PASSWORD`、`MYSQL_DATABASE`、`MYSQL_HOST`、`MYSQL_PORT` 自动生成 `MYSQL_DSN`
 
-## Data Policy
+## Open-Source Boundary
 
-- 本仓库不附带任何小说正文或演示书籍。
-- 用户自行上传的数据仅应来自你明确有权处理的文本或电子书。
-- 仓库不会为你生成或附送任何第三方版权内容。
+- 仓库只发布代码，不发布内容数据
+- 用户自行上传有权处理的文本或电子书
+- 不附带任何小说正文、封面或演示数据
+- 默认仅本机访问
+- `.env`、`data/config/`、`data/book/`、`data/picture/` 不进入 Git
+- `output/` 数据集与实验产物不进入 Git 与 Docker 构建上下文
+- 当前公开版首启默认使用火山引擎 Ark + Qwen rerank 兼容接口
 
-## Public Repo Guarantees
-
-- 公开版 Docker 入口固定为根目录 `Dockerfile`、`docker-compose.yml`、`.env.example`
-- 默认端口仅绑定到 `127.0.0.1`
-- 本地 `.env.*`、上传文件、书籍数据、封面图和工作缓存不会进入公开构建上下文
-- GitHub Actions 会执行 `pytest -q` 和公开 Docker smoke test，作为合并门槛的一部分
-
-## First Start Expectations
-
-- 首次构建可能较慢，因为需要拉取基础镜像并为 rerank 服务准备模型缓存
-- 如果 Docker Desktop / Docker Engine 未启动，`docker compose up --build` 会直接失败
-- 如果你保留了 `.env.example` 中的占位密码，应用会在启动前快速失败并提示你修改
+代码以 [MIT](./LICENSE) 许可证发布，但不授予任何第三方小说内容的再分发权。
 
 ## Troubleshooting
 
-- 打不开前端：检查 `docker compose ps`，确认 `app` 容器已启动，并访问 `http://127.0.0.1:3000`
-- 后端健康检查失败：访问 `http://127.0.0.1:8000/_health` 和 `http://127.0.0.1:8000/ping`
-- 模型功能不可用：确认 `LLM_*` 与 `EMBED_*` 变量已经替换为真实值
-- 想做一次公开版启动验证：运行 `bash scripts/ci_public_smoke.sh`
-
-## Development Checks
-
 ```bash
+docker compose ps
+docker compose logs -f app
 pytest -q
 bash scripts/ci_public_smoke.sh
 ```
+
+模型测试失败时，优先检查 `ARK_API_KEY`、`LLM_MODEL`、`EMBED_MODEL`、`RERANK_API_KEY`、`RERANK_BASE_URL`、`RERANK_MODEL` 是否可用。

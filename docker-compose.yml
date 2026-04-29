@@ -1,6 +1,6 @@
 services:
   mysql:
-    image: mysql:8.0
+    image: mysql:8.0.37
     restart: unless-stopped
     command: ["mysqld", "--port=3306"]
     environment:
@@ -22,18 +22,12 @@ services:
       start_period: 30s
 
   redis:
-    image: redis:7
+    image: redis:7.2.5
     restart: unless-stopped
     command: ["redis-server", "--port", "6379"]
 
-  web-search:
-    image: ghcr.io/aas-ee/open-web-search:latest
-    restart: unless-stopped
-    environment:
-      PORT: 3002
-
   neo4j:
-    image: neo4j:5
+    image: neo4j:5.26.0
     restart: unless-stopped
     environment:
       NEO4J_AUTH: ${NEO4J_USER:-neo4j}/${NEO4J_PASSWORD:-change-me-neo4j-password}
@@ -51,7 +45,7 @@ services:
       start_period: 30s
 
   neo4j-init:
-    image: neo4j:5
+    image: neo4j:5.26.0
     restart: "no"
     env_file:
       - ${STORY2MEMORY_ENV_FILE:-.env}
@@ -74,12 +68,14 @@ services:
         < /workspace/scripts/init_neo4j.cypher
 
   qdrant:
-    image: qdrant/qdrant:latest
+    image: qdrant/qdrant:v1.14.1
     restart: unless-stopped
     volumes:
       - qdrant_data:/qdrant/storage
 
   rerank-local:
+    profiles:
+      - local-rerank
     build:
       context: ./docker/rerank-local
     restart: unless-stopped
@@ -124,13 +120,9 @@ services:
         condition: service_started
       redis:
         condition: service_started
-      rerank-local:
-        condition: service_healthy
-      web-search:
-        condition: service_started
     ports:
       - "127.0.0.1:${APP_FRONTEND_PORT:-3000}:3000"
-      - "127.0.0.1:${APP_BACKEND_PORT:-8000}:8000"
+      - "127.0.0.1:${APP_BACKEND_PORT:-8000}:3000"
 
 volumes:
   mysql_data:
