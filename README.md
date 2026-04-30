@@ -25,21 +25,21 @@ Story2Memory 把一部小说整理成可检索、可追问、可扮演的本地�
 
 ## Showcase
 
-以下为匿名演示界面，不包含第三方小说正文、封面或真实数据。
+以下为真实界面截图，已遮罩第三方作品的封面、书名、人物名与可读文本，仅用于展示产品交互。
 
 | 本地书架 | 证据问答 |
 | --- | --- |
-| ![Bookshelf](./assets/readme/showcase/bookshelf.svg) | ![Book QA Evidence](./assets/readme/showcase/book-qa-evidence.svg) |
+| ![Bookshelf](./assets/readme/showcase/bookshelf.webp) | ![Book QA Evidence](./assets/readme/showcase/book-qa-evidence.webp) |
 
 | 角色档案 | 人物画像 |
 | --- | --- |
-| ![Character Index](./assets/readme/showcase/character-index.svg) | ![Character Profile](./assets/readme/showcase/character-profile.svg) |
+| ![Character Index](./assets/readme/showcase/character-index.webp) | ![Character Profile](./assets/readme/showcase/character-profile.webp) |
 
 | 角色扮演 | 情感时间线 |
 | --- | --- |
-| ![Roleplay Relations](./assets/readme/showcase/roleplay-relations.svg) | ![Emotional Timeline](./assets/readme/showcase/emotional-timeline.svg) |
+| ![Roleplay Relations](./assets/readme/showcase/roleplay-relations.webp) | ![Emotional Timeline](./assets/readme/showcase/emotional-timeline.webp) |
 
-![Relationship Graph](./assets/readme/showcase/relationship-graph.svg)
+![Relationship Graph](./assets/readme/showcase/relationship-graph.webp)
 
 ## Quick Start
 
